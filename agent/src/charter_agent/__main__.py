@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import cast
+from typing import Any, cast
 
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
@@ -51,6 +51,16 @@ def _enable_tracing() -> None:
 
 def _boot() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+    # Local dev convenience: load agent/.env if present. In a hosted-agent
+    # container the platform supplies env directly; the file simply won't exist.
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(override=False)
+    except ImportError:
+        pass
+
     _assert_env()
     _enable_tracing()
     foundry_host.bootstrap()
@@ -61,21 +71,28 @@ def _boot() -> None:
 def main() -> None:
     _boot()
 
-    import json
-
-    from azure_ai_agentserver_invocations import InvocationAgentServerHost  # type: ignore[import-not-found]
+    from azure.ai.agentserver.invocations import InvocationAgentServerHost
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse, Response
 
     app = InvocationAgentServerHost()
 
-    @app.invoke_handler  # type: ignore[misc]
-    async def _handle(request):  # type: ignore[no-untyped-def]
-        data = await request.json()
-        action = data.get("action", "echo")
-        payload = data.get("payload", {})
-        visitor = data.get("visitor")
+    @app.invoke_handler
+    async def _invoke(request: Request) -> Response:
+        body = await request.json()
+        action = body.get("action", "echo")
+        payload = body.get("payload") or {}
+
+        # The BFF (Phase 5) will populate `visitor` from the MSAL token claims.
+        # For now we surface what the platform / dev caller gave us so the
+        # orchestrator and handlers see a stable shape.
+        visitor: dict[str, Any] = body.get("visitor") or {}
+        visitor.setdefault("session_id", request.state.session_id)
+        visitor.setdefault("chat_isolation_key", request.state.chat_isolation_key)
+        visitor.setdefault("user_isolation_key", request.state.user_isolation_key)
+
         result = await handle_invocation(action, payload, visitor)
-        yield f"data: {json.dumps(result)}\n\n"
-        yield "event: done\n\n"
+        return JSONResponse(result)
 
     app.run()
 

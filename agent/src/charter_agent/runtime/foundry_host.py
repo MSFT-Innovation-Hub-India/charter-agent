@@ -167,7 +167,15 @@ def get_toolbox() -> Any:
 
 
 def get_session(session_id: str) -> Any:
-    """Resume the MAF `AgentSession` for `session_id`, or create one and persist it."""
+    """Resume the MAF `AgentSession` for `session_id`, or create one and persist it.
+
+    Phase 1 placeholder: the real MAF `AgentSession` thread will be wired in
+    Phase 2 once a skill actually invokes the model. For now we just record
+    that the session has been touched, to demonstrate $HOME-backed continuity.
+    `resumed` reflects "did the session file already exist when this process
+    first touched it?" — cached for the process lifetime so the answer is
+    stable across in-process calls.
+    """
     if _chat_agent is None:
         raise RuntimeError("foundry_host.bootstrap() must be called before get_session().")
 
@@ -176,14 +184,10 @@ def get_session(session_id: str) -> Any:
 
     session_file = home_dir() / "agent_session" / f"{session_id}.json"
     session_file.parent.mkdir(parents=True, exist_ok=True)
-    # Phase 1: minimal placeholder — the real MAF AgentSession thread will be wired
-    # in Phase 2 once a skill actually invokes the model. For now we just record
-    # that the session has been touched, to demonstrate $HOME-backed continuity.
-    if session_file.exists():
-        thread = {"resumed": True, "path": str(session_file)}
-    else:
+    resumed = session_file.exists()
+    if not resumed:
         session_file.write_text("{}", encoding="utf-8")
-        thread = {"resumed": False, "path": str(session_file)}
+    thread = {"resumed": resumed, "path": str(session_file)}
 
     _sessions[session_id] = thread
     return thread

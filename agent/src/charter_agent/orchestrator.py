@@ -31,7 +31,9 @@ async def handle_invocation(
 
 @trace_function("charter.echo")
 async def _echo(payload: dict[str, Any], visitor: dict[str, Any] | None) -> dict[str, Any]:
-    session_id = os.environ.get("FOUNDRY_AGENT_SESSION_ID", "local")
+    session_id = (visitor or {}).get("session_id") or os.environ.get(
+        "FOUNDRY_AGENT_SESSION_ID", "local"
+    )
     thread = foundry_host.get_session(session_id)
     count = state.bump_counter()
     home = state.home_dir()
