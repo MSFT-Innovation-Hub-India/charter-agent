@@ -34,10 +34,17 @@ Emit **exactly one** Charter JSON object as your final response. Required fields
 - `stakeholders.deputy` â€” a UPN of someone who could ratify on the coordinator's behalf if they're unavailable. If the prompt names one, use it; otherwise propose a plausible candidate (e.g. a chief of staff named in the triggering email) and flag your assumption.
 - `stakeholders.owners` â€” UPNs of the people who will own individual tasks. Derived from the grounding evidence; never invented.
 - `tasks[]` â€” one task per discrete deliverable. Each task has a `task_id` (kebab-case, â‰¤64 chars), `title`, optional `description`, `owner_upn` (must be in stakeholders), optional `due_at` (ISO-8601, in UTC), and optional `runbook_requirements[]` (specific, checkable bullets â€” e.g. "Includes a 12-month variance table", not "covers finance").
-- `watch_channels[]` â€” the M365 surfaces where deliverables will arrive. Typical pattern for a board pack: one `sharepoint_folder` for finals, one `outlook_inbox` watcher on the coordinator's mailbox, one `teams_channel` watcher on the project's Teams channel. Use only the channel kinds the schema enumerates.
+- `watch_channels[]` — the M365 surfaces where deliverables will arrive. Each entry is exactly `{ "kind": <one of the enums>, "config": { …surface-specific keys… } }` — NO other top-level keys (no `ref`, no `purpose`; fold any notes into `config.notes` if you must). Allowed `kind` values are `sharepoint_folder`, `teams_channel`, `teams_chat`, `outlook_inbox`, `outlook_tasks`, `onedrive_folder`. Suggested `config` shapes:
+  - `sharepoint_folder` → `{ "site_url": "...", "folder_path": "..." }`
+  - `onedrive_folder` → `{ "upn": "...", "folder_path": "..." }`
+  - `outlook_inbox` → `{ "upn": "..." }`
+  - `teams_channel` → `{ "team_id": "...", "channel_id": "..." }` (or `team_name`/`channel_name` if IDs aren't known yet)
+  - `teams_chat` → `{ "chat_id": "..." }` (or `participants: ["upn", ...]` if id isn't known)
+  - `outlook_tasks` → `{ "upn": "..." }`
+  Typical pattern for a board pack: one `sharepoint_folder` (or `onedrive_folder`) for finals, one `outlook_inbox` watcher on the coordinator's mailbox, one `teams_channel` watcher on the project's Teams channel.
 - `consolidation_rules` â€” `template_path` if a template was discovered in the grounding, `section_order[]` if the deliverable shape requires it, `cross_section_checks[]` if there are numbers that must reconcile across sections. Empty defaults are fine when the project doesn't need them.
-- `deliverable.output_location` â€” where the final artifact lands (SharePoint or OneDrive path). `deliverable.format` is one of `word`, `excel`, `pdf`, `markdown`.
-- `grounding_sources[]` â€” every source you consulted, with `kind`, `ref`, a one-line `summary`, and `used` set to `true` for the ones that shaped this Charter, `false` for plausible alternatives the coordinator might prefer.
+- `deliverable.output_location` — a plain string path (NOT a dict/object). For OneDrive use a string like `"OneDrive:/Board Packs/May 2026/Board Pack v1.docx"`; for SharePoint use the full URL or `"<site_url>/Shared Documents/<folder>/<file>"`. Always include the intended filename and extension. `deliverable.format` is one of `word`, `excel`, `pdf`, `markdown`.
+- `grounding_sources[]` — every source you consulted, with `kind`, `ref`, a one-line `summary`, and `used` set to `true` for the ones that shaped this Charter, `false` for plausible alternatives the coordinator might prefer. `kind` MUST be exactly one of: `email`, `meeting`, `file`, `teams_message`, `runbook`, `other`. Map anything else into `other` (e.g. a Copilot search result that surfaced a file is still `file`; the user's own prompt or any pure-assumption note is `other`).
 
 Leave `version` at `1`, leave `ratified_at` and `ratified_by` null. Ratification happens in a separate verb after the coordinator reviews and edits your proposal.
 

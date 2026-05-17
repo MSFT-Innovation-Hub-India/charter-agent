@@ -96,7 +96,6 @@ async def _propose_charter(
     run_result = await foundry_host.run_skill(
         skill_body=skill.body,
         user_prompt=framed_prompt,
-        response_format=Charter,
         session_id=session_id,
     )
 
@@ -171,10 +170,12 @@ async def _ratify_charter(
 def _extract_charter(run_result: Any) -> Charter:
     """Pull a Charter out of whatever shape MAF's `agent.run(...)` returned.
 
-    `agent-framework`'s structured-output surface varies slightly across versions:
-    the parsed object can live on `.value`, `.parsed`, or `.output_parsed`, and
-    fall-back text on `.text` / `.content` / the final message. We try each in
-    turn and validate; the explicit failure mode is more useful than a guess.
+    We don't ask the model for strict structured output (the Charter schema's
+    open `dict[str, Any]` configs and optional fields don't fit OpenAI's strict
+    JSON-schema mode — it rejects them as `additionalProperties` violations).
+    Instead the skill body mandates "emit exactly one Charter JSON object" and
+    we validate the text response with Pydantic here. Markdown fences are
+    stripped because gpt-5.x sometimes wraps JSON in ```json ... ```.
     """
     for attr in ("value", "parsed", "output_parsed"):
         candidate = getattr(run_result, attr, None)
@@ -182,15 +183,32 @@ def _extract_charter(run_result: Any) -> Charter:
             return candidate
         if isinstance(candidate, dict):
             return Charter.model_validate(candidate)
-        if isinstance(candidate, str) and candidate.strip().startswith("{"):
-            return Charter.model_validate_json(candidate)
+        if isinstance(candidate, str):
+            stripped = _strip_code_fence(candidate)
+            if stripped.startswith("{"):
+                return Charter.model_validate_json(stripped)
 
     for attr in ("text", "content", "output_text"):
         text = getattr(run_result, attr, None)
-        if isinstance(text, str) and text.strip().startswith("{"):
-            return Charter.model_validate_json(text)
+        if isinstance(text, str):
+            stripped = _strip_code_fence(text)
+            if stripped.startswith("{"):
+                return Charter.model_validate_json(stripped)
 
     raise RuntimeError(
         "propose_charter: could not extract a Charter from the agent run result "
         f"(type={type(run_result).__name__}, attrs={dir(run_result)[:20]}...)."
     )
+
+
+def _strip_code_fence(s: str) -> str:
+    """Strip a leading ```json / ``` fence and the matching trailing ``` if present."""
+    t = s.strip()
+    if t.startswith("```"):
+        # Drop the opening fence line.
+        first_nl = t.find("\n")
+        if first_nl != -1:
+            t = t[first_nl + 1 :]
+        if t.rstrip().endswith("```"):
+            t = t.rstrip()[: -len("```")].rstrip()
+    return t.strip()

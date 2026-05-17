@@ -211,6 +211,14 @@ async def run_skill(
     MAF is asked to produce structured output conforming to it; the caller is
     responsible for parsing `result` into that model (MAF surfaces vary slightly
     across `agent-framework` versions).
+
+    NOTE: Passing a Pydantic class via `response_format` activates OpenAI strict
+    structured-output mode, which requires `additionalProperties: false` on every
+    object node AND every property in `required`. This is incompatible with our
+    Charter schema (open `dict[str, Any]` on `WatchChannel.config`, many optional
+    fields). For Charter-shaped artifacts, leave `response_format=None` and parse
+    the model's JSON output with `Model.model_validate_json()` instead; rely on
+    the SKILL.md output contract to constrain shape. See AGENTS.md §6.
     """
     if _chat_agent is None or _toolbox is None:
         raise RuntimeError("foundry_host.bootstrap() must be called first.")

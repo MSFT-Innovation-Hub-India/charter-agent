@@ -190,7 +190,7 @@ The single most common design question on this project will be "does this new fu
 | Cross-section reconciliation that genuinely needs deterministic numeric checks and Word/Excel stitching | **Skill** (`consolidate`) **+** generated `$HOME/code/consolidator.py` it invokes | The skill orchestrates; the generated module does the deterministic byte-pushing. This is the only sanctioned codegen path. |
 
 **The acid test for any new feature:** if you can describe the behaviour fully in English to a colleague in under 200 words, it should be a skill. If you can't — because it has bit-exact invariants, performance constraints, or security gates — it's code. When in doubt, prefer the skill; you can always lift bits down into code later if they prove non-negotiable.
-
+**Skill prompts as the schema contract.** Whenever a skill emits a Pydantic-validated artifact (e.g. `propose_charter` returning a `Charter`), do **not** reach for OpenAI strict structured output (`response_format=<PydanticClass>` / `client.responses.parse`). Strict mode demands `additionalProperties: false` on every object node and every property in `required` — which is incompatible with our schemas (open `dict[str, Any]` configs, many optional fields). Instead: emit JSON via the skill body, strip ```json fences, validate with `Model.model_validate_json()`. The SKILL.md output contract then becomes the binding spec; enumerate explicitly (a) every `Literal[…]` enum's allowed values, (b) the expected key set for any `dict`/object field, (c) any `str` field a model might naturally emit as a structured value (say "plain string" with an example). The model honors precise wording; vague descriptions burn iterations chasing `ValidationError`s.
 ---
 
 ## 5. Repository layout (target)

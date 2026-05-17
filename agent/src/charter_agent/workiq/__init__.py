@@ -158,18 +158,20 @@ async def send_teams_dm(*, recipient_upn: str, body: str) -> Any:
 # --- WorkIQSharePoint2 ----------------------------------------------------
 
 
-async def create_sharepoint_folder(
-    *, site_id: str, drive_id: str, parent_path: str, folder_name: str
-) -> Any:
-    return await _call(
-        "create_sharepoint_folder",
-        ["WorkIQSharePoint2___createFolder"],
-        {
-            "site_id": site_id,
-            "drive_id": drive_id,
-            "parent_path": parent_path,
-            "folder_name": folder_name,
-        },
+async def create_sharepoint_folder(*, site_url: str, folder_path: str) -> Any:
+    """Create a folder at `folder_path` under `site_url`.
+
+    The underlying `WorkIQSharePoint2___createFolder` tool takes
+    `(site_id, drive_id, parent_path, folder_name)`, not a URL. Resolving a URL
+    into those four values needs `___findSite` + `___getDefaultDocumentLibraryInSite`
+    first; that resolver hasn't been built yet. Until it lands the kickoff
+    fan-out treats this raise as a 'skipped' status (see `kickoff._maybe_sharepoint`).
+    """
+    raise NotImplementedError(
+        "create_sharepoint_folder: URL→(site_id,drive_id,parent_path,folder_name) "
+        "resolution is not yet implemented. Add a SharePoint resolver that calls "
+        "WorkIQSharePoint2___findSite + ___getDefaultDocumentLibraryInSite, then "
+        "call WorkIQSharePoint2___createFolder."
     )
 
 
@@ -200,8 +202,8 @@ async def create_outlook_task(
     *, owner_upn: str, title: str, body: str, due_at: str | None = None
 ) -> Any:
     raise NotImplementedError(
-        "Outlook Tasks (Microsoft To Do) is not exposed by the live "
-        "`Charter-Agent-Tools` Toolbox. Add a Tasks-capable WorkIQ server to "
-        "the Toolbox, or have the kickoff skill use a SharePoint list / Teams "
-        "post as the assignment surface."
+        "create_outlook_task: Outlook Tasks (Microsoft To Do) is not exposed by "
+        "the live `Charter-Agent-Tools` Toolbox. Add a Tasks-capable WorkIQ "
+        "server to the Toolbox, or have the kickoff skill use a SharePoint list / "
+        "Teams post as the assignment surface."
     )

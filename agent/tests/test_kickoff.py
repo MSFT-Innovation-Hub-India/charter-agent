@@ -173,3 +173,29 @@ async def test_ratify_verb_rejects_invalid_charter(
     )
     assert not r["ok"]
     assert "validation failed" in r["error"]
+
+
+async def test_fanout_skipped_when_capability_unavailable(
+    isolated_home, mocked_workiq: dict[str, AsyncMock]
+) -> None:
+    # Both SharePoint folder creation and Outlook tasks raise NotImplementedError
+    # against the real Toolbox (no resolver / no Tasks server). Fanout should
+    # report them as skipped without polluting failure lists.
+    c = _charter()
+    mocked_workiq["create_sharepoint_folder"].side_effect = NotImplementedError(
+        "needs resolver"
+    )
+    mocked_workiq["create_outlook_task"].side_effect = NotImplementedError(
+        "no Tasks server"
+    )
+
+    summary = await kickoff.fanout(c, by_upn="priya@example.com")
+
+    assert summary["sharepoint_folder"]["status"] == "skipped"
+    assert "resolver" in summary["sharepoint_folder"]["reason"]
+    assert summary["outlook_tasks"]["status"] == "skipped"
+    assert summary["outlook_tasks"]["created"] == 0
+    assert summary["outlook_tasks"]["failures"] == []
+    # Email and Teams still ran.
+    assert summary["briefing_emails"]["sent"] == 2
+    assert summary["teams_kickoff"]["status"] == "posted"

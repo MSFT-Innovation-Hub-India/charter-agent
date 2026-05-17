@@ -59,7 +59,10 @@ async def _maybe_sharepoint(charter: Charter, kickoff: dict[str, Any]) -> dict[s
     if site_url is None:
         return {"status": "skipped", "reason": "output_location is not a SharePoint URL"}
 
-    await workiq.create_sharepoint_folder(site_url=site_url, folder_path=folder_path)
+    try:
+        await workiq.create_sharepoint_folder(site_url=site_url, folder_path=folder_path)
+    except NotImplementedError as e:
+        return {"status": "skipped", "reason": str(e)}
     kickoff["sharepoint_folder_done"] = True
     kickoff["sharepoint_folder_path"] = charter.deliverable.output_location
     return {"status": "created", "path": charter.deliverable.output_location}
@@ -128,6 +131,17 @@ async def _maybe_outlook_tasks(charter: Charter, kickoff: dict[str, Any]) -> dic
                 body=_render_task_body(t),
                 due_at=t.due_at.isoformat() if t.due_at else None,
             )
+        except NotImplementedError as e:
+            # Whole capability is unavailable in this Toolbox — stop trying and
+            # report once. Don't pollute `failures` with a row per task.
+            kickoff["outlook_tasks_created"] = created
+            return {
+                "created": new_created,
+                "total": len(created),
+                "failures": failures,
+                "status": "skipped",
+                "reason": str(e),
+            }
         except Exception as e:
             failures.append({"task_id": t.task_id, "error": str(e)})
             continue
