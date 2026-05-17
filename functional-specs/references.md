@@ -40,16 +40,24 @@ The actual build environment.
 
 ---
 
-## 3. Agent Framework — the harness for hosted agents
+## 3. Microsoft Agent Framework — the host runtime
+
+The **host agent runtime** for this project is Microsoft Agent Framework (`agent-framework` + `agent-framework-azure-ai`), running on a Foundry `gpt-5.x` deployment authenticated by the Foundry-assigned Managed Identity. MAF owns `/invocations` (served by `azure-ai-agentserver-invocations`), the conversational thread (`AgentSession` persisted to `$HOME`), skill loading, and native `MCPTool` dispatch against the Foundry Toolbox. See [AGENTS.md §3 invariant 12](../AGENTS.md) and [§4](../AGENTS.md#4-technology-choices-locked).
 
 - **Foundry Hosted Agents (Agent Framework docs)** — `ResponsesHostServer` and `InvocationsHostServer` wrappers, Python and .NET examples.
   https://learn.microsoft.com/en-us/agent-framework/hosting/foundry-hosted-agent
 
-- **Agent Chat History and Memory** — `AgentSession` serialisation/deserialisation, in-service vs in-memory storage of chat history.
+- **Agent Chat History and Memory** — `AgentSession` serialisation/deserialisation, in-service vs in-memory storage of chat history. This is the mechanism we use to persist the host runtime's thread inside the Foundry per-session microVM `$HOME`.
   https://learn.microsoft.com/en-us/agent-framework/user-guide/agents/agent-memory
 
 - **Step 4: Memory & Persistence** — practical session-state and context-provider patterns.
   https://learn.microsoft.com/en-us/agent-framework/get-started/memory
+
+- **`MCPTool` (Agent Framework MCP client)** — the native MCP client we use to talk to the Foundry Toolbox. Replaces the hand-rolled `McpBridge` in the portal-generated `architecture/samplecode_toolbox.py`. Handles `initialize` / `mcp-session-id` / `notifications/initialized` / `tools/list` / `tools/call` / approval-item plumbing. Headers and per-call header injection (used to stamp the coordinator's WorkIQ token on each call — see [AGENTS.md invariant 3](../AGENTS.md#3-non-negotiable-architectural-invariants)) are first-class.
+  https://learn.microsoft.com/en-us/agent-framework/user-guide/agents/tools/mcp
+
+- **GitHub Copilot Agents (Agent Framework docs)** — `CopilotClient.AsAIAgent()` / `GitHubCopilotAgent`, the MAF wrapper around the Copilot SDK we use for the **codegen sub-agent** (see §9 for the SDK itself and the dual-runtime rationale).
+  https://learn.microsoft.com/en-us/agent-framework/agents/providers/github-copilot
 
 - **Getting Started with Foundry Hosted Agents** (Valentina Alto, Medium) — walk-through of going from a local agent to a deployed hosted one, with the same endpoint serving both portal and custom UIs.
   https://valentinaalto.medium.com/getting-started-with-foundry-hosted-agents-394959230136
@@ -193,39 +201,45 @@ A working, portal-generated sample lives in the repo at [`../architecture/sample
 **Standing rule.** The sample is a *starting reference*, not a contract. For anything beyond the calls shown in it \u2014 a new tool, a changed schema, a new MCP method, a bumped `protocolVersion`, a renamed header \u2014 introspect the **live Toolbox MCP endpoint** (`tools/list`, `initialize` capabilities) at runtime rather than coding against a stale snapshot. Treat Microsoft Learn (the links above) as the next-most-authoritative source after the live server. If the sample needs to change because the portal regenerated a newer one, replace it and update [`../architecture/architecture_and_design.md` \u00a78.1](../architecture/architecture_and_design.md) in the same PR.
 
 ---
-## 9. GitHub Copilot SDK on Foundry hosted agents (Invocations protocol)
+## 9. GitHub Copilot SDK as the codegen sub-agent (dual-runtime)
 
-The canonical reference for wiring the GitHub Copilot SDK into a Foundry hosted agent over the Invocations protocol:
+The Copilot SDK is **not** the host runtime in this project. It is the **codegen sub-agent**: a second, narrowly-scoped MAF agent (`GitHubCopilotAgent` / `CopilotClient.AsAIAgent()`) that runs on GHCP's default model (currently Claude Opus 4.7) and is invoked **only** by the `consolidate` skill, **only** to generate `$HOME/code/consolidator.py`. See [AGENTS.md invariant 12](../AGENTS.md#3-non-negotiable-architectural-invariants) and [§4.2](../AGENTS.md#42-model-assignment-policy).
+
+The canonical reference for wiring the SDK into a Foundry hosted agent over the Invocations protocol is the Microsoft sample below — read it for the protocol shape and the credential-isolation hazard, then ignore the parts that assume the SDK is the *only* runtime in the agent:
 
 - **`microsoft-foundry/foundry-samples` — `github-copilot` Invocations sample** (GitHub).
   https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/bring-your-own/invocations/github-copilot/README.md
 
 What it pins down for our build (don't re-derive any of this from first principles):
 
-- **Copilot SDK is the [`github-copilot-sdk`](https://pypi.org/project/github-copilot-sdk/) PyPI package, used in-process** (`from copilot import CopilotClient`). No CLI, no subprocess. Anything in our docs that says "subprocess" is wrong and should be corrected.
-- **Invocations protocol server** is the [`azure-ai-agentserver-invocations`](https://pypi.org/project/azure-ai-agentserver-invocations/) package. It is what serves `POST /invocations` inside the hosted agent. **We use it directly** — the Copilot SDK is the agent runtime sitting on top of it, with no Microsoft Agent Framework wrapper in between. See [AGENTS.md §3 invariant 11](../AGENTS.md) and [§4](../AGENTS.md#4-technology-choices-locked).
+- **Copilot SDK is the [`github-copilot-sdk`](https://pypi.org/project/github-copilot-sdk/) PyPI package, used in-process** (`from copilot import CopilotClient`). No CLI, no subprocess.
+- **Invocations protocol server** is the [`azure-ai-agentserver-invocations`](https://pypi.org/project/azure-ai-agentserver-invocations/) package. It is what serves `POST /invocations` inside the hosted agent. Both the host runtime (MAF) and the codegen sub-agent (Copilot SDK) sit on top of this one server — only one process, one Invocations server, two MAF agents inside it.
 - **Two authentication / model backends** the Copilot SDK can sit on top of, selected by env vars:
   | Backend | Required env vars | Credential | Effective model |
   |---|---|---|---|
-  | **GitHub Copilot** (the one we use) | `GITHUB_TOKEN` | Fine-grained GitHub PAT, *Copilot Requests → Read-only* permission. Classic `ghp_` tokens are **not** supported — must be `github_pat_`, `gho_`, or `ghu_`. | Whatever GHCP's default model is (currently Claude Opus 4.7). |
-  | **Foundry model** (we explicitly do **not** use) | `FOUNDRY_PROJECT_ENDPOINT` + `AZURE_AI_MODEL_DEPLOYMENT_NAME` | `DefaultAzureCredential` / Managed Identity | The named Azure OpenAI deployment. |
+  | **GitHub Copilot** (the one we use for codegen) | `GITHUB_TOKEN` | Fine-grained GitHub PAT, *Copilot Requests → Read-only* permission. Classic `ghp_` tokens are **not** supported — must be `github_pat_`, `gho_`, or `ghu_`. | Whatever GHCP's default model is (currently Claude Opus 4.7). |
+  | **Foundry model** (we explicitly do **not** use — this is the **host** runtime's job via MAF, not the codegen sub-agent's) | `FOUNDRY_PROJECT_ENDPOINT` + `AZURE_AI_MODEL_DEPLOYMENT_NAME` | `DefaultAzureCredential` / Managed Identity | The named Azure OpenAI deployment. |
   
-  **If both env-var sets are present, the Foundry backend silently wins.** This is the hazard our agent boot sequence asserts against (see [AGENTS.md §4.2](../AGENTS.md#42-model-assignment-policy)).
-- **Session persistence is first-class.** The hosted agent's microVM keeps the Copilot session in memory and resumes it across `/invocations` calls via `FOUNDRY_AGENT_SESSION_ID`. Our runtime client (`copilot_runtime.py`) keeps one `CopilotClient` warm for the lifetime of the process and resumes a single Copilot session per Foundry session on top of it; the (exceptional) `consolidator.py` codegen path borrows the same session rather than creating its own.
-- **`skills/` directory auto-load.** Any `skills/*/SKILL.md` is loaded as a Copilot skill at process start. **This is our primary specialisation mechanism** — the orchestrator translates each `/invocations` verb into a skill invocation on the warm Copilot session (`copilot_runtime.run_skill(name, **inputs)`). The skills set is generic across projects; per-project variety comes from the Charter the skills reason against. See [AGENTS.md §3 invariant 1 and §4](../AGENTS.md). Reasoning runs on GHCP's default model via `GITHUB_TOKEN` ([AGENTS.md §4.2](../AGENTS.md#42-model-assignment-policy)); any skill that genuinely needs a different model can expose a Foundry `gpt-5.x` deployment as a named Copilot tool, but must not spawn a second runtime.
-- **Streaming.** Each Copilot `SessionEvent` is yielded back to the caller as an SSE `data:` frame, terminated by `event: done`. The dashboard's `render_dashboard` verb does not stream, but `coordinator_chat` should — wire SSE through to the BFF when implementing that verb.
+  **If both env-var sets are present, the Foundry backend silently wins.** In our dual-runtime world *both* env vars are deliberately present — the host runtime needs `AZURE_AI_MODEL_DEPLOYMENT_NAME`. To defeat the silent flip, `runtime/copilot_codegen.py` reads `GITHUB_TOKEN` from the OS env and passes it to `CopilotClient(github_token=…)` **as a constructor argument**, so the SDK's backend selector sees an explicit token and routes to GHCP regardless of what else is in the env. The boot sequence asserts both env vars are present (see [AGENTS.md §4.2](../AGENTS.md#42-model-assignment-policy)).
+- **Session persistence is first-class.** The hosted agent's microVM keeps each MAF agent's session in memory and resumes it across `/invocations` calls via `FOUNDRY_AGENT_SESSION_ID`. Our `runtime/copilot_codegen.py` keeps one `CopilotClient`-backed `GitHubCopilotAgent` warm for the lifetime of the process and uses it only for short-lived codegen turns; nothing else in the system shares that thread.
+- **Skills.** The Copilot SDK has its own `skills/*/SKILL.md` auto-loader. We do **not** rely on it — our host runtime is MAF, and skills are loaded by `runtime/skill_loader.py` and injected into the MAF `ChatAgent`. See [§10](#10-agent-skills-format--the-open-agentskillsio-specification).
+- **Streaming.** Each MAF agent yields response chunks back to the caller as an SSE `data:` frame, terminated by `event: done`. The dashboard's `render_dashboard` verb does not stream, but `coordinator_chat` should — wire SSE through to the BFF when implementing that verb. The codegen sub-agent is invoked through a tool, not streamed to the user.
 - **Build/deploy gotcha.** Container images must be `linux/amd64`. On Apple Silicon, use `docker build --platform=linux/amd64 ...`. `azd deploy` does an ACR remote build and avoids this.
+
+**Standing rule — do not move work onto the codegen sub-agent.** Quality wishes ("Opus would phrase this nudge better") are not a reason to widen its remit. If a non-codegen step needs a different model, surface that model as a named MAF tool that the host `ChatAgent` can select — do not invent a second reasoning surface. See [AGENTS.md invariant 12](../AGENTS.md#3-non-negotiable-architectural-invariants).
 
 ---
 
 ## 10. Agent Skills format — the open agentskills.io specification
 
-The skills under `agent/skills/` are **not** a Copilot-SDK-only idea — they conform to the open **[agentskills.io](https://agentskills.io/specification)** specification (Anthropic-originated, now adopted by GitHub Copilot, VS Code, Claude Code, Goose, Gemini CLI, Kiro, fast-agent, Letta, Mistral Vibe). This is invariant 1 of the project ([AGENTS.md §3](../AGENTS.md#3-non-negotiable-architectural-invariants)) and is contractually load-bearing: every `agent/skills/{name}/SKILL.md` must be a valid Agent Skill per the spec.
+The skills under `agent/skills/` conform to the open **[agentskills.io](https://agentskills.io/specification)** specification (Anthropic-originated, now adopted by GitHub Copilot, VS Code, Claude Code, Goose, Gemini CLI, Kiro, fast-agent, Letta, Mistral Vibe). This is invariant 1 of the project ([AGENTS.md §3](../AGENTS.md#3-non-negotiable-architectural-invariants)) and is contractually load-bearing: every `agent/skills/{name}/SKILL.md` must be a valid Agent Skill per the spec.
+
+In this project the host runtime is MAF, not the Copilot SDK, so we do **not** rely on the Copilot SDK's built-in `skills/` auto-loader. Instead, a small in-repo loader (`runtime/skill_loader.py`, ~50 lines) reads each `agent/skills/*/SKILL.md`, validates the frontmatter against the agentskills.io shape, and injects the body into the host `ChatAgent`'s instructions / tool-selection surface at boot. Conformance to the open spec still buys us portability — the same `SKILL.md` body can be loaded by any agentskills.io client for isolated authoring/testing without standing up the full Foundry agent.
 
 - **Specification** — directory layout, required YAML frontmatter fields (`name`, `description`), optional fields (`license`, `compatibility`, `metadata`, `allowed-tools`), naming rules (lowercase a–z / digits / hyphens, ≤64 chars, must match parent directory), description rules (≤1024 chars, must convey *what* and *when*), progressive disclosure stages (Discovery → Activation → Execution), and the optional `scripts/`, `references/`, `assets/` subdirs.
   https://agentskills.io/specification
 
-- **Client showcase** — list of clients that load agentskills.io-compatible skills (GitHub Copilot is on it, which is why our Copilot SDK auto-load works as a compliant runtime). A skill authored in this repo can be tested in Claude Code, VS Code Copilot, Goose, or Gemini CLI without modification.
+- **Client showcase** — list of clients that load agentskills.io-compatible skills. A skill authored in this repo can be tested in Claude Code, VS Code Copilot, Goose, or Gemini CLI without modification.
   https://agentskills.io/clients
 
 - **`skills-ref` validator** — the upstream CLI that validates a skill directory against the spec. We run `skills-ref validate ./agent/skills/*` in CI on every PR that touches the skills directory.
@@ -233,11 +247,11 @@ The skills under `agent/skills/` are **not** a Copilot-SDK-only idea — they co
 
 What this gives us in practice (and what AGENTS.md §4.3 codifies as our local conventions on top):
 
-- **Portability** — the same `SKILL.md` body can be loaded by any agentskills.io client for isolated authoring/testing without standing up the full Foundry agent.
+- **Portability** — the same `SKILL.md` body can be loaded by any agentskills.io client.
 - **Auditability** — skills are versioned files reviewed in PRs, not opaque prompt strings buried in code.
 - **A sharp core/skill split** — see [AGENTS.md §4.4](../AGENTS.md#44-core-code-vs-skill--the-decision-rule). Deterministic plumbing (state I/O, cursors, idempotency, transport, dispatch) stays as code; reasoning/generation/judgement is always a skill.
 
-**Out of scope, deliberately:** Claude-Code-specific extension mechanisms — `plugins/`, per-skill `mcp.json`, slash commands — are *not* part of the agentskills.io spec and *not* used here. Tool discovery for this project is the **Foundry Toolbox over MCP** (see §8 above), which replaces per-skill `mcp.json` files with one bundled MCP endpoint (`Charter-Agent-Tools`) consumed via the `McpBridge`.
+**Out of scope, deliberately:** Claude-Code-specific extension mechanisms — `plugins/`, per-skill `mcp.json`, slash commands — are *not* part of the agentskills.io spec and *not* used here. Tool discovery for this project is the **Foundry Toolbox over MCP** (see §8 above), which replaces per-skill `mcp.json` files with one bundled MCP endpoint (`Charter-Agent-Tools`) consumed via the host runtime's native MAF `MCPTool`.
 
 ---
 ## Recommended reading order
@@ -252,6 +266,6 @@ If the implementing team is new to this stack:
 6. **Agent Framework hosting integration** — once writing real agent logic.
 7. **Work IQ MCP overview** plus verification that the tenant's existing portal agents can call WorkIQ — confirm dependencies are sorted before going further.
 8. **Connect agents to MCP servers** + **Create and use a Foundry Toolbox** (section 8 above) — read these before wiring WorkIQ into the agent, since the chosen integration pattern is one Foundry Toolbox endpoint that bundles all WorkIQ MCP servers, not direct per-server MCP connections.
-9. **Agent Framework + GitHub Copilot integration** — background reading only. We intentionally do **not** use the Agent Framework wrapper around Copilot SDK; see [AGENTS.md §3 invariant 12](../AGENTS.md) for why.
+9. **Agent Framework + GitHub Copilot integration** — the `CopilotClient.AsAIAgent()` / `GitHubCopilotAgent` wrapper. We **do** use this, but only for the **codegen sub-agent** (see §9 above). It is *not* the host runtime — the host runtime is a plain MAF `ChatAgent` over a Foundry `gpt-5.x` deployment. See [AGENTS.md §3 invariant 12](../AGENTS.md) for the dual-runtime rationale.
 
 A small caveat: several of these sources are recent enough (particularly the May 2026 Foundry hosted agents refresh) that official Learn docs and practitioner blogs are still settling into agreement. Where they disagree, trust Microsoft Learn for capability claims and the practitioner blogs for usage patterns.

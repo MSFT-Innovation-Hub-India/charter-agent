@@ -2,7 +2,7 @@
 
 > Read this before every change. It is the operating contract for any coding agent (GitHub Copilot, Claude, Cursor, etc.) working in this repository. Humans should also read it before opening a PR.
 
-This file follows the [agents.md](https://agents.md) convention. Sections 1–10 are the contract (invariants, tech choices, conventions, change-safety checklist). Section 11 is a consolidated build-time reference (env vars, action verbs, skills, schemas, boot sequence, `McpBridge` shape, BFF contract, test matrix, dependencies, phases) so a builder doesn't have to scroll the 700-line architecture doc to wire a single module. The architecture doc remains authoritative — if anything in §11 drifts from it, fix one or the other in the same PR.
+This file follows the [agents.md](https://agents.md) convention. Sections 1–10 are the contract (invariants, tech choices, conventions, change-safety checklist). Section 11 is a consolidated build-time reference (env vars, action verbs, skills, schemas, boot sequence, MCP/Toolbox shape, BFF contract, test matrix, dependencies, phases) so a builder doesn't have to scroll the 700-line architecture doc to wire a single module. The architecture doc remains authoritative — if anything in §11 drifts from it, fix one or the other in the same PR.
 
 ---
 
@@ -33,18 +33,24 @@ If your change contradicts any of these, **update the spec first** (in the same 
 
 These exist because violating them breaks the system's identity, security, or scaling model. Do not work around them. If you think you have a case for breaking one, raise it explicitly — don't slip it in.
 
-1. **Skills-first, conformant to the open [agentskills.io](https://agentskills.io/specification) spec.** This is the most load-bearing architectural choice in the system, above every other invariant on this list. Every reusable agent capability — classify, draft, validate, consolidate, propose, render — is packaged as an **Agent Skill**: a folder under `agent/skills/{name}/` containing a `SKILL.md` with valid YAML frontmatter (required `name` and `description`; optional `metadata`, `license`, `compatibility`, `allowed-tools`), plus optional `scripts/`, `references/`, `assets/` subdirs. Skills are progressively disclosed (name+description always loaded at boot, body on activation, supporting files on demand). The Copilot SDK's `skills/*/SKILL.md` auto-loader is a compliant agentskills.io runtime — GitHub Copilot is in the spec's [client showcase](https://agentskills.io/clients). Conformance buys us portability (the same skill can be loaded by Claude Code, VS Code, Goose, Gemini CLI, Kiro, fast-agent, etc. for isolated testing), auditability (skills are versioned files reviewed in PRs), and a clean cut between *deterministic plumbing* (code) and *reasoning/generation/judgement* (skill). See [§4.3](#43-agent-skills-format-agentskillsio-conformance) for the format contract and [§4.4](#44-core-code-vs-skill--the-decision-rule) for the heuristic. Note: agentskills.io is a *format* spec, not a runtime or tool-discovery mechanism — Claude-Code-specific concepts like `plugins/` and `mcp.json` are **not** part of it and **not** used here; tool discovery for us is the Foundry Toolbox over MCP (see [§4.1](#41-foundry-toolbox-and-the-copilot-sdk-mcpbridge)).
-2. **Generic over specific (the corollary of invariant 1).** The agent's *code* is project-shape-agnostic. *All* per-project variety lives in (a) the **Project Charter** (`$HOME/charter.json` in the session sandbox), (b) the **Agent Skills** under `agent/skills/` (auto-loaded by the Copilot runtime; shape the agent's reasoning declaratively per workflow), and (c) — only when deterministic running code is genuinely required — a **Copilot-generated `consolidator.py`** in `$HOME/code/`. Do not hard-code domain logic — board pack, audit, escalation, budget, etc. — anywhere in the agent itself. If a feature seems to need it, the answer is almost always "extend the Charter schema, add or refine a skill, or (last resort) regenerate `consolidator.py`."
-3. **WorkIQ is delegated-only.** Every WorkIQ call runs in the **visiting user's OBO context**, never as the agent's managed identity. Application-only auth is not supported. See [spec §10.1](functional-specs/project_workspace_spec.md). This forces invariants 4 and 5 below.
+1. **Skills-first, conformant to the open [agentskills.io](https://agentskills.io/specification) spec.** This is the most load-bearing architectural choice in the system, above every other invariant on this list. Every reusable agent capability — classify, draft, validate, consolidate, propose, render — is packaged as an **Agent Skill**: a folder under `agent/skills/{name}/` containing a `SKILL.md` with valid YAML frontmatter (required `name` and `description`; optional `metadata`, `license`, `compatibility`, `allowed-tools`), plus optional `scripts/`, `references/`, `assets/` subdirs. Skills are progressively disclosed (name+description always loaded at boot, body on activation, supporting files on demand). A small in-repo loader (`runtime/skill_loader.py`, ~50 lines) reads every `agent/skills/*/SKILL.md`, validates the frontmatter, and injects the body into the MAF `ChatAgent`'s instructions / tool-selection surface at boot. Conformance to the open spec buys us portability (the same skill can be loaded by Claude Code, VS Code, Goose, Gemini CLI, Kiro, fast-agent, GitHub Copilot etc. for isolated authoring/testing), auditability (skills are versioned files reviewed in PRs), and a clean cut between *deterministic plumbing* (code) and *reasoning/generation/judgement* (skill). See [§4.3](#43-agent-skills-format-agentskillsio-conformance) for the format contract and [§4.4](#44-core-code-vs-skill--the-decision-rule) for the heuristic. Note: agentskills.io is a *format* spec, not a runtime or tool-discovery mechanism — Claude-Code-specific concepts like `plugins/` and `mcp.json` are **not** part of it and **not** used here; tool discovery for us is the Foundry Toolbox over MCP (see [§4.1](#41-foundry-toolbox-via-native-maf-mcptool)).
+2. **Generic over specific (the corollary of invariant 1).** The agent's *code* is project-shape-agnostic. *All* per-project variety lives in (a) the **Project Charter** (`$HOME/charter.json` in the session sandbox), (b) the **Agent Skills** under `agent/skills/` (auto-loaded by the host runtime; shape the agent's reasoning declaratively per workflow), and (c) — only when deterministic running code is genuinely required — a **Copilot-generated `consolidator.py`** in `$HOME/code/`. Do not hard-code domain logic — board pack, audit, escalation, budget, etc. — anywhere in the agent itself. If a feature seems to need it, the answer is almost always "extend the Charter schema, add or refine a skill, or (last resort) regenerate `consolidator.py`."
+3. **WorkIQ runs in the coordinator's OBO context.** Every WorkIQ call — read or write, capture-time or send-time — is made in the **coordinator's delegated context** (the ratifier of the Charter), never as the agent's managed identity and never as the visiting collaborator. Application-only auth is not supported by WorkIQ ([spec §10.1](functional-specs/project_workspace_spec.md)). The Charter nominates a **deputy** (UPN) used as a fallback when the coordinator's token is unavailable (PTO, revoked, Conditional Access block). Per-visitor OBO is explicitly **not** used — collaborators see the dashboard via SSO, but the agent's view of M365 is the coordinator's view. This is what makes invariants 4 and 5 below tractable.
 4. **No background workers, no cron, no schedulers.** The agent only runs when a user hits `/invocations`. There is no autonomous wake-up loop. Anything that *feels* like it needs scheduling is wrong — re-think it as "runs on next visit."
-5. **Human-in-the-loop for every outbound action.** The agent drafts; the coordinator approves; the agent sends in the **coordinator's OBO context** (not as a bot). There is no `auto_approve` mode. Do not add one.
+5. **Human-in-the-loop for every outbound action.** The agent drafts; the coordinator approves; the agent sends in the **coordinator's OBO context** (per invariant 3, not as a bot). There is no `auto_approve` mode. Do not add one.
 6. **State lives in `$HOME`, period.** No external database, queue, cache, or event bus. The Foundry per-session microVM `$HOME` (Charter, `state.json`, `activity.json`, Copilot-generated code) is the entire project store. The frontend is a renderer; it holds no state.
 7. **Charter immutability outside the ratification flow.** Only the `kickoff` and `amend_charter` code paths may write `charter.json`. Both must run through coordinator ratification. Increment `version` on every amendment.
 8. **Use Invocations, not Responses.** The Foundry protocol choice is Invocations (we manage history ourselves). Don't introduce Responses-protocol code.
 9. **Channel-watchers are a registry.** New `watch_channel.kind` values must plug into the registry described in [architecture §6.2](architecture/architecture_and_design.md). Never `if channel.kind == "...":` switches scattered in agent code.
 10. **Idempotency on every outbound side-effect.** Every suggested action has a UUID; `state.executed_action_ids` is the gate. A double-approve must not double-send.
 11. **No ports exposed from the sandbox.** The frontend Container App is the only public surface. The agent serves only `/invocations`.
-12. **Single agent runtime — GitHub Copilot SDK.** The agent is a thin shell around a `CopilotClient` from the [`github-copilot-sdk`](https://pypi.org/project/github-copilot-sdk/) PyPI package, used **in-process** (`from copilot import CopilotClient`; no CLI, no subprocess). The Copilot session and the Foundry hosted-agent session map **1:1** keyed by `FOUNDRY_AGENT_SESSION_ID`; intelligent compaction in the SDK is the agent's conversational memory. All reasoning — charter proposal, classification, drafting nudges, coordinator chat, consolidation orchestration, and the (exceptional) generation of `consolidator.py` — runs through that single client. Auth is via `GITHUB_TOKEN` (a fine-grained GitHub PAT with *Copilot Requests → Read-only*) so the SDK runs on GHCP's default model (Claude Opus 4.7 today). **Do not** set `AZURE_AI_MODEL_DEPLOYMENT_NAME` in the agent's process env — the Copilot SDK would silently flip to the Foundry-model backend ([sample README](https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/bring-your-own/invocations/github-copilot/README.md): *"If both are set → the Foundry model takes precedence"*). The `gpt-5.x` deployments in the Foundry project remain reachable as named tools if a skill ever needs them, but they are not the agent's runtime. See [§4.2](#42-model-assignment-policy).
+12. **Dual-runtime: MAF `ChatAgent` (host) + Copilot SDK (codegen sub-agent).** The agent has two runtimes, separated by purpose:
+    - **Host runtime — Microsoft Agent Framework `ChatAgent` on a Foundry `gpt-5.x` deployment, authenticated by Managed Identity.** Owns `/invocations` (served by `azure-ai-agentserver-invocations`), the session lifecycle (1:1 to Foundry session via `FOUNDRY_AGENT_SESSION_ID`), the conversational memory (MAF `AgentSession` thread persisted in `$HOME`), skill loading, Toolbox MCP tool dispatch (native MAF `MCPTool`), and all everyday reasoning — charter proposal, classification, drafting nudges, status triangulation, coordinator chat, consolidation orchestration. This is the agent.
+    - **Codegen sub-agent — `CopilotClient` from [`github-copilot-sdk`](https://pypi.org/project/github-copilot-sdk/), used in-process** (`from copilot import CopilotClient`; no CLI, no subprocess), wrapped as a MAF agent via `CopilotClient.AsAIAgent()` / `GitHubCopilotAgent`. Authenticated by a fine-grained GitHub PAT (*Copilot Requests → Read-only*) passed **via constructor**, not env var. Used **only** by the `consolidate` skill, **only** to generate `$HOME/code/consolidator.py`, because Claude Opus 4.7 is materially better at multi-file Python generation than `gpt-5.x`. Not the host runtime; not on the everyday reasoning path; never the surface for coordinator chat.
+
+    **Why split.** Distinct credential surfaces (MI for host + Toolbox + Foundry model; PAT only for codegen), distinct rate-limit pools, distinct failure modes. Constructor-passed PAT defeats the silent-backend-flip hazard in the Copilot SDK (env-var `GITHUB_TOKEN` + `AZURE_AI_MODEL_DEPLOYMENT_NAME` both present → SDK quietly uses the Foundry backend; see [references.md §9](functional-specs/references.md)). The boot sequence asserts **both** `AZURE_AI_MODEL_DEPLOYMENT_NAME` and `GITHUB_TOKEN` are present (one for the host model, one for the codegen sub-agent).
+
+    **What this forbids.** Do not introduce a third runtime. Do not call `CopilotClient` from anywhere except `runtime/copilot_codegen.py` (enforced by `import-linter`). Do not move everyday reasoning onto the codegen sub-agent for "quality" reasons — if the host model is insufficient for a step, surface a Foundry `gpt-5.x` deployment as a named MAF tool for that step. See [§4.2](#42-model-assignment-policy).
 
 A longer, scenario-flavoured version of these invariants is in [spec §10 "Things easy to get wrong"](functional-specs/project_workspace_spec.md). Read it. **Invariant 1 (skills-first) is the one most likely to get quietly violated under time pressure** — every time you find yourself reaching for a `match` statement, an `if project_kind == "..."` branch, or a hard-coded prompt fragment inside `orchestrator.py` or any `*/handlers/*.py`, stop and ask whether it belongs in a skill instead.
 
@@ -54,55 +60,66 @@ A longer, scenario-flavoured version of these invariants is in [spec §10 "Thing
 
 | Layer | Choice | Notes |
 |---|---|---|
-| Agent runtime | **GitHub Copilot SDK** ([`github-copilot-sdk`](https://pypi.org/project/github-copilot-sdk/)) on top of [`azure-ai-agentserver-invocations`](https://pypi.org/project/azure-ai-agentserver-invocations/) | The `CopilotClient` is the agent. One warm client per process; one Copilot session per Foundry session, resumed via `FOUNDRY_AGENT_SESSION_ID`. Invocations protocol server (`azure-ai-agentserver-invocations`) serves `POST /invocations` and emits OpenTelemetry traces automatically. **No separate harness, no Microsoft Agent Framework wrapper** — the canonical Microsoft sample at `microsoft-foundry/foundry-samples/.../github-copilot` is the reference. |
+| Host agent runtime | **Microsoft Agent Framework `ChatAgent`** (`agent-framework` + `agent-framework-azure-ai`) on a Foundry `gpt-5.x` deployment via Managed Identity, served by [`azure-ai-agentserver-invocations`](https://pypi.org/project/azure-ai-agentserver-invocations/) | Owns `/invocations`, session lifecycle, MAF `AgentSession` memory, native `MCPTool` dispatch, skill loading, every reasoning verb. One warm `ChatAgent` per process; one MAF thread per Foundry session, keyed by `FOUNDRY_AGENT_SESSION_ID`. The Invocations server emits OpenTelemetry traces automatically. |
+| Codegen sub-agent | **GitHub Copilot SDK** ([`github-copilot-sdk`](https://pypi.org/project/github-copilot-sdk/)) wrapped as a MAF agent via `CopilotClient.AsAIAgent()` / `GitHubCopilotAgent`, used **in-process** | Used **only** by the `consolidate` skill to generate `$HOME/code/consolidator.py`. Runs on GHCP's default model (Claude Opus 4.7 today). PAT passed **via constructor**, not env var — see [§4.2](#42-model-assignment-policy). Not on any everyday reasoning path. |
 | Agent hosting | **Foundry hosted agents** (Invocations protocol) | **Stateful** — per-session microVM, `$HOME` persists across `/invocations` requests (15-min idle / 30-day session ceiling). |
-| Model | **GHCP default model** (currently Claude Opus 4.7) via `GITHUB_TOKEN` (fine-grained PAT, *Copilot Requests → Read-only*) | Single model surface — reasoning, drafting, classification, and (exceptional) codegen all run on this. `AZURE_AI_MODEL_DEPLOYMENT_NAME` **must not be set**, or the SDK silently flips to a Foundry-model backend. The `gpt-5.x` Foundry deployments stay available for any skill that explicitly wants a different model as a named tool. |
-| Per-project specialisation | **Copilot SDK skills** in `agent/skills/*/SKILL.md` (auto-loaded at process start) | Primary mechanism. Skills are declarative, transparent, auditable. The skills set is generic across projects; per-project variety comes from the Charter the skills reason against. |
+| Host model | **Foundry `gpt-5.x` deployment** via Managed Identity (`DefaultAzureCredential`) | Every reasoning verb except `consolidator.py` generation. `AZURE_AI_MODEL_DEPLOYMENT_NAME` is the deployment name. |
+| Codegen model | **GHCP default model** (currently Claude Opus 4.7) via fine-grained GitHub PAT (*Copilot Requests → Read-only*) | Only invoked from `runtime/copilot_codegen.py`, only by the `consolidate` skill. |
+| Per-project specialisation | **Agent Skills** in `agent/skills/*/SKILL.md` (loaded at process start by `runtime/skill_loader.py`) | Primary mechanism. Skills are declarative, transparent, auditable, agentskills.io-conformant. The skills set is generic across projects; per-project variety comes from the Charter the skills reason against. |
 | Per-project running code (exceptional) | **Copilot-generated `consolidator.py`** in `$HOME/code/` | Generated at kickoff and on amendment when consolidation logic genuinely needs deterministic Python (template-specific Word stitching, cross-section numeric reconciliation). Renderer and compliance behaviour are skills, not modules. |
-| M365 data plane | **WorkIQ MCP servers**, OAuth Identity Passthrough via the Foundry project's MCP connections | Delegated only. |
-| Bundling multiple MCP servers | **Foundry Toolboxes** (MCP-compatible endpoint), consumed by the Copilot SDK via an **`McpBridge`** | All WorkIQ MCP servers are bundled in a Foundry Toolbox named `Charter-Agent-Tools`. The agent opens one MCP session to the Toolbox at boot, calls `tools/list`, maps each tool into a Copilot tool definition (substituting `.` and `-` with `_` — Copilot SDK rejects them), and routes Copilot tool calls back through the bridge. See [§4.1](#41-foundry-toolbox-and-the-copilot-sdk-mcpbridge), [references.md §8](functional-specs/references.md), and the working sample at [architecture/samplecode_toolbox.py](architecture/samplecode_toolbox.py). |
-| Frontend | **Python + FastAPI BFF + small SPA** in **Azure Container Apps**, MSAL/Entra SSO | One deployment per tenant; multi-project via `/p/{project_id}` routing. The BFF sets `x-ms-chat-isolation-key = project_id` on every `/invocations` call **regardless of which collaborator is calling**, so all collaborators on a project hit the same Foundry session, same `$HOME`, same Copilot conversational memory. Per-user identity still flows through each invocation for OBO calls to WorkIQ. |
-| Identity | **Entra ID** — Foundry-assigned Agent ID; frontend app reg with `User.Read`; reuse internal SSO if available | Conditional Access applies; plan for it. |
-| Observability | **App Insights via OpenTelemetry** (auto-injected by Foundry; emitted by `azure-ai-agentserver-invocations` automatically) + `$HOME/activity.json` | Both, always. The protocol library handles OTel — no manual exporter wiring. |
+| M365 data plane | **WorkIQ MCP servers**, delegated auth in the coordinator's OBO context | Always coordinator OBO with deputy fallback ([invariant 3](#3-non-negotiable-architectural-invariants)). Application-only is not supported by WorkIQ. |
+| Bundling multiple MCP servers | **Foundry Toolboxes** (MCP-compatible endpoint), consumed by the host runtime as a native MAF `MCPTool` | All WorkIQ MCP servers are bundled in a Foundry Toolbox named `Charter-Agent-Tools`. The host runtime declares a single `MCPTool` against the Toolbox endpoint; MAF handles `initialize` / `tools/list` / `tools/call` / approval-item plumbing. See [§4.1](#41-foundry-toolbox-via-native-maf-mcptool), [references.md §8](functional-specs/references.md). The portal-generated `samplecode_toolbox.py` is reference-only now — its hand-rolled `McpBridge` is what `MCPTool` replaces. |
+| Frontend | **Python + FastAPI BFF + small SPA** in **Azure Container Apps**, MSAL/Entra SSO | One deployment per tenant; multi-project via `/p/{project_id}` routing. The BFF sets `x-ms-chat-isolation-key = project_id` on every `/invocations` call **regardless of which collaborator is calling**, so all collaborators on a project hit the same Foundry session, same `$HOME`, same MAF thread. WorkIQ calls run in the coordinator's OBO context (invariant 3) — the visitor's identity is used for dashboard auth/role filtering only, not for M365 calls. |
+| Identity | **Entra ID** — Foundry-assigned Agent ID (Managed Identity) for host model + Toolbox; coordinator's delegated token (cached via OBO flow with refresh) for WorkIQ; frontend app reg with `User.Read` | Conditional Access applies; plan for it (deputy fallback per invariant 3). |
+| Observability | **App Insights via OpenTelemetry** (auto-injected by Foundry; emitted by `azure-ai-agentserver-invocations` and by MAF automatically) + `$HOME/activity.json` | Both, always. The protocol library and MAF handle OTel — no manual exporter wiring. |
 
 Do **not** substitute these without an architectural decision record committed alongside the change.
 
-### 4.1 Foundry Toolbox and the Copilot SDK `McpBridge`
+### 4.1 Foundry Toolbox via native MAF `MCPTool`
 
-The Copilot SDK does not ship a built-in MCP client. The agent therefore bridges between Copilot's tool interface and the Foundry Toolbox's MCP endpoint with an `McpBridge` helper, modelled exactly on the portal-generated sample at [architecture/samplecode_toolbox.py](architecture/samplecode_toolbox.py).
+The host runtime is MAF, and MAF ships first-class MCP-client support. The agent therefore declares a single `MCPTool` against the Foundry Toolbox endpoint and lets MAF handle the protocol. No hand-rolled bridge.
 
-What the sample pins down — treat each as a hard requirement, not a suggestion:
+What the runtime must do — treat each as a hard requirement, not a suggestion:
 
-- Version-pinned Toolbox URL format in dev (`/toolboxes/Charter-Agent-Tools/versions/{ver}/mcp?api-version=v1`); consumer endpoint (`/toolboxes/Charter-Agent-Tools/mcp?api-version=v1`) in prod.
-- `DefaultAzureCredential` against the `https://ai.azure.com/.default` scope.
-- The mandatory `Foundry-Features: Toolboxes=V1Preview` HTTP header on every request.
-- MCP `initialize` → capture `mcp-session-id` → `notifications/initialized` handshake.
-- `tools/list` once at agent boot (cache per process); `tools/call` per tool invocation, **always streamed** (`stream=True`) — non-streaming `tools/call` is not supported by the Toolbox today.
-- Tool-name sanitisation at the Copilot-SDK boundary only: `.` and `-` → `_`. Do not rewrite tool names when calling MCP directly.
-- Skip `prompts/list` (Copilot SDK should be constructed with `load_prompts=False` equivalent); `send_ping()` against the Toolbox returns 500 and must not be called.
-- Reference: Microsoft Learn's "Use Foundry Toolboxes from the Copilot SDK" — https://aka.ms/foundry-toolbox-copilotsdk.
+- Use the **version-pinned** Toolbox URL in dev (`/toolboxes/Charter-Agent-Tools/versions/{ver}/mcp?api-version=v1`) and the **consumer** endpoint in prod (`/toolboxes/Charter-Agent-Tools/mcp?api-version=v1`).
+- Authenticate the Toolbox connection with `DefaultAzureCredential` against the `https://ai.azure.com/.default` scope (Foundry-assigned Managed Identity).
+- Pass the mandatory `Foundry-Features: Toolboxes=V1Preview` HTTP header on every request to the Toolbox endpoint — wire it via MAF's `MCPTool` headers option.
+- Configure `MCPTool(require_approval="never")` for WorkIQ reads **and** writes. Approval is enforced at a higher layer (the `actions/` module's `SuggestedAction` lifecycle, gated by the coordinator in the dashboard) — see [references.md §8](functional-specs/references.md).
+- Inject the **coordinator's** delegated WorkIQ token (per invariant 3) into the per-tool-call header set MAF emits — `runtime/workiq_token.py` is the sole owner of token acquisition and refresh, with deputy fallback. Visitor identity is **not** propagated to the Toolbox.
+- Watch the 100-second non-streaming MCP call timeout in capture loops — fan out channel polls concurrently (`asyncio.gather`), not serially.
 
-**Standing rule.** The sample is the starting reference, not a frozen contract. For anything beyond what it covers — a new tool, a new MCP method, a changed schema, an auth or header change, an MCP protocol-version bump — introspect the **live Toolbox endpoint on the fly** (`tools/list`, server `capabilities`, the response of `initialize`) rather than coding to a stale snapshot.
+**What goes away.** The portal-generated `architecture/samplecode_toolbox.py` is **reference-only** now. The hand-rolled `McpBridge` (initialize / `mcp-session-id` / `notifications/initialized` / streamed `tools/call` / tool-name sanitisation `.`/`-` → `_`) is exactly what `MCPTool` replaces. Keep the sample file in the repo as a debugging aid (it pins down the raw wire shape if MAF's `MCPTool` ever needs to be bypassed), but no production code path imports it.
+
+**Standing rule.** Microsoft Learn's "Connect agents to MCP servers" + "Create and use a Foundry Toolbox" are the authoritative sources ([references.md §8](functional-specs/references.md)). For anything beyond what's documented there — a new tool, an unfamiliar schema, an MCP protocol-version bump — introspect the **live Toolbox endpoint on the fly** rather than coding to a stale snapshot.
 
 ### 4.2 Model assignment policy
 
-There is **one** model path in this system. The Copilot SDK runs on its bundled default model — currently **Claude Opus 4.7**, the same model GHCP uses in VS Code — authenticated by `GITHUB_TOKEN`. Reasoning, drafting, classification, coordinator chat, and the (exceptional) generation of `consolidator.py` all flow through the same `CopilotClient` session.
+There are **two** model paths, separated by purpose:
+
+| Path | Runtime | Model | Credential | Used for |
+|---|---|---|---|---|
+| **Host** (everyday) | MAF `ChatAgent` | Foundry `gpt-5.x` deployment | Foundry-assigned Managed Identity (`DefaultAzureCredential`) | Every reasoning verb: charter proposal, classification, status triangulation, draft-outbound, coordinator chat, consolidation *orchestration*. |
+| **Codegen sub-agent** (exceptional) | Copilot SDK `CopilotClient` (wrapped via `CopilotClient.AsAIAgent()`) | GHCP default (Claude Opus 4.7) | Fine-grained GitHub PAT, *Copilot Requests → Read-only*, passed **via constructor** | Generating `$HOME/code/consolidator.py` from the `consolidate` skill. Nothing else. |
 
 **Credentials at deploy time:**
 
-- `GITHUB_TOKEN` is a deployment secret stored in Key Vault and injected into the hosted agent as an env var by `agent.yaml` / the Bicep template. It must be a **fine-grained GitHub PAT** with *Copilot Requests → Read-only* permission (token format `github_pat_…`, `gho_…`, or `ghu_…`; classic `ghp_…` tokens are not supported). It must belong to a **service account**, not an individual — PATs tied to a person break the day that person leaves the org.
-- The agent's Foundry-assigned Managed Identity is used to call the **Toolbox** (and potentially `gpt-5.x` deployments if a skill explicitly opts in as a named tool). `FOUNDRY_PROJECT_ENDPOINT` is auto-injected by the platform.
+- `AZURE_AI_MODEL_DEPLOYMENT_NAME` is the host-runtime model deployment (`gpt-5.x`). Required at boot.
+- `GITHUB_TOKEN` is the codegen sub-agent's PAT — a deployment secret stored in Key Vault and injected into the hosted agent as an env var by `agent.yaml` / the Bicep template. It must be a **fine-grained GitHub PAT** with *Copilot Requests → Read-only* permission (token format `github_pat_…`, `gho_…`, or `ghu_…`; classic `ghp_…` tokens are not supported). It must belong to a **service account**, not an individual — PATs tied to a person break the day that person leaves the org. Required at boot.
+- `FOUNDRY_PROJECT_ENDPOINT` is auto-injected by the platform; used both for the host model and for the Toolbox.
+
+**Why pass the PAT via constructor, not just rely on the env var.** The Copilot SDK's backend selection rule is: *if `GITHUB_TOKEN` and `AZURE_AI_MODEL_DEPLOYMENT_NAME` are both present in the SDK's env, the Foundry backend silently wins* ([Foundry sample README](https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/bring-your-own/invocations/github-copilot/README.md)). In our dual-runtime world both env vars are deliberately present — the host runtime needs `AZURE_AI_MODEL_DEPLOYMENT_NAME`. To defeat the silent flip, `runtime/copilot_codegen.py` reads `GITHUB_TOKEN` from the OS env and passes it to `CopilotClient(github_token=…)` (or the equivalent constructor argument), so the SDK's backend selector sees an explicit token and routes to GHCP regardless of what else is in the env.
 
 **Things this rule forbids:**
 
-- Do **not** set `AZURE_AI_MODEL_DEPLOYMENT_NAME` in the agent's process env. It silently flips the Copilot SDK to a Foundry-model backend (per the [Foundry sample README](https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/bring-your-own/invocations/github-copilot/README.md): *"If both are set → the Foundry model takes precedence"*) and our model surface is silently swapped without any compile-time error. The agent boot sequence asserts this env var is absent and refuses to start otherwise.
-- Do **not** spawn a second LLM call path (a separate Anthropic API key, a different OpenAI account, a parallel MAF reasoning helper) without an ADR and an update to invariant 12. If a skill needs a different model for a specific step, expose it as a **named Copilot tool** that calls a Foundry `gpt-5.x` deployment with the agent's Managed Identity — do not create a second runtime.
+- Do **not** widen the codegen sub-agent's usage beyond `consolidator.py` generation. If a skill needs Claude Opus for a non-codegen reasoning step, get an ADR first.
+- Do **not** spawn a third LLM path (a separate Anthropic API key, a different OpenAI account, a parallel reasoning helper) without an ADR and an update to invariant 12. If a skill needs a different model for a specific step, expose it as a **named MAF tool** that calls another Foundry deployment with the agent's Managed Identity — do not create another runtime.
 
 **Where this is enforced in code:**
 
-- `agent/src/charter_agent/copilot_runtime.py` is the **only** module allowed to instantiate `CopilotClient`. Enforced via `import-linter` contract.
-- `agent/src/charter_agent/codegen/` (for `consolidator.py` generation) calls into `copilot_runtime.py` to acquire a session — it does not construct its own client.
-- The agent boot sequence asserts: `GITHUB_TOKEN` present, `AZURE_AI_MODEL_DEPLOYMENT_NAME` absent. Refuses to start if either check fails.
+- `agent/src/charter_agent/runtime/foundry_host.py` is the **only** module allowed to instantiate the host `ChatAgent`. Enforced via `import-linter` contract.
+- `agent/src/charter_agent/runtime/copilot_codegen.py` is the **only** module allowed to instantiate `CopilotClient`. Enforced via `import-linter` contract.
+- `agent/src/charter_agent/codegen/` (for `consolidator.py` generation) is the **only** caller of `runtime/copilot_codegen.py`. Enforced via `import-linter` contract.
+- The agent boot sequence asserts **both** `AZURE_AI_MODEL_DEPLOYMENT_NAME` and `GITHUB_TOKEN` are present. Refuses to start otherwise.
 
 ### 4.3 Agent Skills format ([agentskills.io](https://agentskills.io/specification) conformance)
 
@@ -125,7 +142,7 @@ agent/skills/{skill-name}/
 name: capture-classify                       # required; 1–64 chars; lowercase a–z, 0–9, hyphens; must equal parent dir; no leading/trailing/consecutive hyphens
 description: Classifies a CandidateEvent emitted by a channel handler as submission, revised_submission, question, supporting_material, or unrelated relative to a Charter task. Use whenever the capture loop has a new event to label.   # required; 1–1024 chars; describe BOTH what the skill does AND when to use it; include trigger keywords
 license: Proprietary                         # optional
-compatibility: Requires GitHub Copilot SDK; Foundry Toolbox MCP endpoint   # optional; only if there are real environment requirements
+compatibility: Requires MAF ChatAgent runtime; Foundry Toolbox MCP endpoint   # optional; only if there are real environment requirements
 metadata:                                    # optional; arbitrary string→string map
   owner: charter-agent
   version: "1.0"
@@ -142,7 +159,7 @@ allowed-tools: ToolboxMcp(workiq_files_*) ToolboxMcp(workiq_ask)   # optional, e
 **Repo conventions on top of the spec:**
 
 - Skill names use the kebab-case verbs we already have: `project-kickoff`, `status-refresh`, `capture-classify`, `compliance-check`, `draft-outbound`, `consolidate`, `amend-charter`, `render-dashboard`.
-- The `description` field is the *only* mechanism by which the orchestrator and the Copilot SDK route work to a skill — invest time in it. Bad descriptions are the most common reason a skill is silently ignored at runtime.
+- The `description` field is the *only* mechanism by which the orchestrator and the host runtime route work to a skill — invest time in it. Bad descriptions are the most common reason a skill is silently ignored at runtime.
 - File references in `SKILL.md` are relative paths from the skill root (`scripts/extract.py`, `references/RUNBOOK.md`). Keep references one level deep — no nested chains.
 - A skill is **never** project-specific. If a skill seems to need per-project text, the per-project text belongs in the Charter (`charter.json`) and the skill reads it from there.
 - Skills are reviewed and shipped with the agent container image. There is no "hot-load a skill from $HOME" path; the runtime path for *exceptional* deterministic per-project code remains `$HOME/code/consolidator.py` (see invariant 1 sub-bullet c).
@@ -160,7 +177,7 @@ The single most common design question on this project will be "does this new fu
 |---|---|---|
 | Deterministic plumbing — atomic file I/O, JSON serialisation, schema validation, HTTP/MCP transport, request dispatch, OBO header propagation | **Code** (`agent/src/charter_agent/…`) | Invariants must hold byte-for-byte; not negotiable by an LLM. |
 | State-of-the-world bookkeeping — `state.json` reads/writes, NDJSON append to `activity.json`, `executed_action_ids` gating, channel cursors | **Code** (`state.py`, `actions/`, `capture/handlers/*`) | Idempotency and audit integrity (invariants 10, 6) require strict, testable code. |
-| Boot-time policy — env-var assertions, warm `CopilotClient` lifecycle, MCP handshake, OTel wiring | **Code** (`copilot_runtime.py`, `__main__.py`) | One-shot startup contract; no language-model judgement involved. |
+| Boot-time policy — env-var assertions, warm `ChatAgent` lifecycle, MAF `MCPTool` wiring, OTel wiring | **Code** (`runtime/foundry_host.py`, `runtime/copilot_codegen.py`, `__main__.py`) | One-shot startup contract; no language-model judgement involved. |
 | Verb dispatch — mapping `/invocations` action verbs to skill invocations + downstream effects | **Code** (`orchestrator.py`) | Dispatch is structural; the *reasoning* each verb triggers belongs in the skill it calls. |
 | Channel-handler poll mechanics — "since" cursors, dedup keys, author filters | **Code** (`capture/handlers/*`) | Cursor correctness is testable; getting it wrong loses or duplicates events. |
 | Classification, drafting, judgement, summarisation, gap detection, prompt-generation, document consolidation orchestration, coordinator conversation | **Skill** (`agent/skills/*/SKILL.md`) | These benefit from natural-language instructions, reference docs, and iteration without code review cycles; they are what LLMs do well. |
@@ -215,18 +232,22 @@ charter-agent/
 │   │   ├── amend-charter/SKILL.md
 │   │   └── render-dashboard/SKILL.md
 │   ├── src/charter_agent/
-│   │   ├── __main__.py                ← azure-ai-agentserver-invocations entry; warms CopilotClient
-│   │   ├── copilot_runtime.py         ← sole owner of CopilotClient; per-session resume; tool registry
-│   │   ├── orchestrator.py            ← top-level invocation dispatcher (action verbs → Copilot session prompts)
+│   │   ├── __main__.py                ← azure-ai-agentserver-invocations entry; boots host + codegen runtimes
+│   │   ├── runtime/
+│   │   │   ├── foundry_host.py        ← sole owner of MAF ChatAgent + AgentSession; native MCPTool wiring
+│   │   │   ├── copilot_codegen.py     ← sole owner of CopilotClient (constructor-PAT); only called by codegen/
+│   │   │   ├── skill_loader.py        ← reads agent/skills/*/SKILL.md, injects into ChatAgent
+│   │   │   └── workiq_token.py        ← coordinator OBO acquisition + deputy fallback + refresh
+│   │   ├── orchestrator.py            ← top-level invocation dispatcher (action verbs → ChatAgent / skill calls)
 │   │   ├── charter/                   ← schema, validation, ratification, amendment
 │   │   ├── kickoff/                   ← fan-out actions (SharePoint, Teams, Outlook, email)
 │   │   ├── capture/                   ← watch-channel registry + handlers (skill-driven classifier)
 │   │   ├── status/                    ← triangulation logic (pure)
 │   │   ├── actions/                   ← suggested-action drafter + executor (with idempotency)
-│   │   ├── codegen/                   ← exceptional codegen (consolidator.py only) via copilot_runtime
+│   │   ├── codegen/                   ← exceptional codegen (consolidator.py only) via runtime/copilot_codegen
 │   │   ├── consolidation/             ← invokes generated consolidator.py, surfaces findings
-│   │   ├── state.py                   ← $HOME read/write helpers
-│   │   ├── workiq/                    ← McpBridge + thin wrappers around the WorkIQ MCP tools
+│   │   ├── state.py                   ← $HOME read/write helpers (MAF AgentSession persistence too)
+│   │   ├── workiq/                    ← thin wrappers around WorkIQ MCP tools (the MAF MCPTool side)
 │   │   └── observability.py           ← OTel spans + activity-log emission
 │   └── tests/
 ├── frontend/                          ← Container App (BFF + SPA)
@@ -247,9 +268,10 @@ Two folders that are explicitly *not* in the repo: a `database/` and a `worker/`
 
 - **Language**: Python 3.12 for the agent and the BFF. Type-hinted, `ruff` + `pyright` clean. No untyped public functions.
 - **Logging**: Always go through `observability.py` — it emits both an OTel span and an `activity.json` entry. Never call `print()` or bare `logging.info` in agent code.
-- **WorkIQ access**: Only through `agent/src/charter_agent/workiq/`. No direct MCP calls from orchestrator/kickoff/capture code. This makes mocking in tests possible. The `McpBridge` that exposes WorkIQ tools to the Copilot session also lives in this module — see [architecture/samplecode_toolbox.py](architecture/samplecode_toolbox.py) for the reference implementation.
-- **Copilot SDK runtime**: Only through `agent/src/charter_agent/copilot_runtime.py`. One `CopilotClient` instance per agent process (kept warm). One Copilot session per Foundry session, resumed via `FOUNDRY_AGENT_SESSION_ID` — never recreated within the same Foundry session. The (exceptional) `consolidator.py` codegen path in `codegen/` borrows a session from `copilot_runtime.py`; it does not construct its own client.
-- **Skills**: Project-workspace specialisation lives in `agent/skills/{name}/SKILL.md` and must be valid per the [agentskills.io spec](https://agentskills.io/specification) (see [§4.3](#43-agent-skills-format-agentskillsio-conformance)). CI runs `skills-ref validate ./agent/skills/*` on every PR that touches the directory; PR is blocked on failure. Skill changes are code changes — reviewed, versioned, shipped with the agent image. Do not write per-project skills; the skills set is generic, the Charter is what the skills reason against. Before adding any new feature, run it through the decision rule in [§4.4](#44-core-code-vs-skill--the-decision-rule).
+- **WorkIQ access**: Only through `agent/src/charter_agent/workiq/`. No direct MCP calls from orchestrator/kickoff/capture code. This makes mocking in tests possible. Token acquisition (coordinator OBO + deputy fallback) is the sole responsibility of `runtime/workiq_token.py`; the `workiq/` wrappers ask for a token from there and never reach for credentials directly.
+- **Host runtime**: Only through `agent/src/charter_agent/runtime/foundry_host.py`. One MAF `ChatAgent` instance per agent process (kept warm). One MAF `AgentSession` thread per Foundry session, keyed by `FOUNDRY_AGENT_SESSION_ID`, persisted to `$HOME` — never recreated within the same Foundry session.
+- **Codegen sub-agent**: Only through `agent/src/charter_agent/runtime/copilot_codegen.py`. The `CopilotClient` is constructed with the PAT passed **as a constructor argument** (not read by the SDK from env) to defeat the silent backend-flip ([§4.2](#42-model-assignment-policy)). Only callable from `agent/src/charter_agent/codegen/`. Enforced by `import-linter`.
+- **Skills**: Project-workspace specialisation lives in `agent/skills/{name}/SKILL.md` and must be valid per the [agentskills.io spec](https://agentskills.io/specification) (see [§4.3](#43-agent-skills-format-agentskillsio-conformance)). Loaded at boot by `runtime/skill_loader.py` and injected into the host `ChatAgent`. CI runs `skills-ref validate ./agent/skills/*` on every PR that touches the directory; PR is blocked on failure. Skill changes are code changes — reviewed, versioned, shipped with the agent image. Do not write per-project skills; the skills set is generic, the Charter is what the skills reason against. Before adding any new feature, run it through the decision rule in [§4.4](#44-core-code-vs-skill--the-decision-rule).
 - **JSON schemas**: Charter, state, suggested-action, and candidate-event schemas are defined in `agent/src/charter_agent/charter/schemas.py` as Pydantic models. The schemas in [architecture/architecture_and_design.md §5](architecture/architecture_and_design.md) are authoritative; the Pydantic models must round-trip them.
 - **Tests**: every WorkIQ wrapper has a unit test with a fixture-mocked MCP response. Every action executor has a test proving double-execution is a no-op. Every channel handler has a test for the "since" cursor.
 - **No comments** explaining *what* the code does. Only comments for *why* something non-obvious is the way it is. See [spec §10.13](functional-specs/project_workspace_spec.md) — the audit log is the narrative record, not source comments.
@@ -280,7 +302,7 @@ For each phase, the agent doing the work should:
 - [ ] **agentskills.io conformance check:** if the change touches `agent/skills/`, does `skills-ref validate` pass? Are `name` and `description` populated, with the description including trigger keywords?
 - [ ] If it adds a domain-specific behaviour, has it been moved into the Charter schema, an existing skill, or a new skill — *not* into orchestrator/handler/kickoff code?
 - [ ] If it touches `$HOME`, does it route through `state.py` and emit an activity-log entry?
-- [ ] If it calls WorkIQ, is the call going through `workiq/` and explicitly in the visiting user's OBO context?
+- [ ] If it calls WorkIQ, is the call going through `workiq/` and using a token obtained from `runtime/workiq_token.py` (coordinator OBO with deputy fallback, per invariant 3)?
 - [ ] If it adds an outbound action, does it have a UUID and a check against `executed_action_ids`?
 - [ ] If it adds a new `watch_channel.kind`, is it registered in the channel registry (not switched on inline)?- [ ] If it adds a new `/invocations` action verb, is the action contract documented in [architecture §7](architecture/architecture_and_design.md)?
 - [ ] If it changed the Charter, state, action, or candidate-event schema, were the architecture doc and the Pydantic models updated together?
@@ -317,12 +339,13 @@ The substance is in [architecture/architecture_and_design.md](architecture/archi
 
 | Name | Set by | Required | Purpose |
 |---|---|---|---|
-| `GITHUB_TOKEN` | Bicep → Key Vault → `agent.yaml` env injection | **yes** | Authenticates Copilot SDK on GHCP default model. Fine-grained PAT, *Copilot Requests → Read-only*, service-account-owned. Token format `github_pat_…`, `gho_…`, or `ghu_…` (classic `ghp_…` unsupported). |
-| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | — | **must be unset** | Boot-time assertion in `copilot_runtime.bootstrap()` refuses to start if present (would silently flip the SDK to the Foundry-model backend; see §4.2). |
-| `FOUNDRY_AGENT_SESSION_ID` | Platform (per-request) / BFF (mirrored to `project_id`) | yes | Copilot session resume key. Maps 1:1 to Foundry session. |
-| `FOUNDRY_PROJECT_ENDPOINT` | Platform (auto-injected) | yes | Base URL for Foundry; also base for the Toolbox URL. |
+| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | `agent.yaml` / Bicep | **yes** | Host runtime's Foundry model deployment (`gpt-5.x`). Used by `runtime/foundry_host.py` via Managed Identity. Boot fails if absent. |
+| `GITHUB_TOKEN` | Bicep → Key Vault → `agent.yaml` env injection | **yes** | Codegen sub-agent PAT. Fine-grained, *Copilot Requests → Read-only*, service-account-owned. Token format `github_pat_…`, `gho_…`, or `ghu_…` (classic `ghp_…` unsupported). Read by `runtime/copilot_codegen.py` from the OS env and passed to `CopilotClient(…)` **as a constructor argument** so the SDK's backend selector cannot silently flip to the Foundry backend even though `AZURE_AI_MODEL_DEPLOYMENT_NAME` is also present. Boot fails if absent. |
+| `FOUNDRY_AGENT_SESSION_ID` | Platform (per-request) / BFF (mirrored to `project_id`) | yes | Host runtime's MAF `AgentSession` resume key. Maps 1:1 to Foundry session. |
+| `FOUNDRY_PROJECT_ENDPOINT` | Platform (auto-injected) | yes | Base URL for Foundry; used both for the host model and as the base for the Toolbox URL. |
 | `TOOLBOX_MCP_ENDPOINT` | `agent.yaml` / Bicep (or derived from `FOUNDRY_PROJECT_ENDPOINT`) | yes | Full Toolbox MCP URL. Dev: `…/toolboxes/Charter-Agent-Tools/versions/{ver}/mcp?api-version=v1`. Prod: `…/toolboxes/Charter-Agent-Tools/mcp?api-version=v1`. **Do not** prefix with `FOUNDRY_` — that prefix is reserved by the platform. |
-| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Platform (auto-injected) | yes | OTel exporter destination; `azure-ai-agentserver-invocations` wires the exporter automatically. No manual setup. |
+| `COORDINATOR_OBO_TENANT_ID` / `COORDINATOR_OBO_CLIENT_ID` / `COORDINATOR_OBO_CLIENT_SECRET` | Bicep → Key Vault → `agent.yaml` | yes | Confidential-client credentials used by `runtime/workiq_token.py` to perform OBO on the coordinator's stored refresh token (and the deputy's, on fallback). |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Platform (auto-injected) | yes | OTel exporter destination; `azure-ai-agentserver-invocations` and MAF wire the exporter automatically. No manual setup. |
 
 The BFF additionally sets these **per request** on outbound `/invocations` calls (see §11.7).
 
@@ -346,7 +369,7 @@ New verbs must be added to the orchestrator dispatcher *and* documented in [arch
 
 ### 11.3 Skills contract
 
-All skills live in `agent/skills/{name}/SKILL.md`, are valid per the [agentskills.io spec](https://agentskills.io/specification) (see [§4.3](#43-agent-skills-format-agentskillsio-conformance) for the format contract and [§4.4](#44-core-code-vs-skill--the-decision-rule) for what belongs in a skill vs in code), auto-loaded by the Copilot SDK at process start, and invoked via `copilot_runtime.run_skill(name, **inputs)`. The skills set is generic across projects; per-project variety comes from the Charter the skills reason against.
+All skills live in `agent/skills/{name}/SKILL.md`, are valid per the [agentskills.io spec](https://agentskills.io/specification) (see [§4.3](#43-agent-skills-format-agentskillsio-conformance) for the format contract and [§4.4](#44-core-code-vs-skill--the-decision-rule) for what belongs in a skill vs in code), loaded at process start by `runtime/skill_loader.py` and injected into the host `ChatAgent`, and invoked via `foundry_host.run_skill(name, **inputs)`. The skills set is generic across projects; per-project variety comes from the Charter the skills reason against. The `consolidate` skill is the only one that crosses runtimes — its body instructs the host to delegate `consolidator.py` generation to the codegen sub-agent via a tool exposed by `runtime/copilot_codegen.py`.
 
 | Skill | Responsibility | Inputs | Outputs | Invoked by |
 |---|---|---|---|---|
@@ -384,34 +407,27 @@ Retired in v1 (do not reintroduce): `compliance_module_path`, `renderer_module_p
 
 The exact ordered steps `__main__.py` must execute. Refuse to start if step 1 fails.
 
-1. **Assert env policy** — `GITHUB_TOKEN` present, `AZURE_AI_MODEL_DEPLOYMENT_NAME` absent. Hard-fail on either.
-2. **Warm singleton `CopilotClient`** via `copilot_runtime.bootstrap()`. Authenticate with `GITHUB_TOKEN`. Construct with `load_prompts=False` (Copilot SDK does not use MCP prompts and the Toolbox does not serve `prompts/list`). Keep warm for process lifetime — never destroy/recreate within a Foundry session.
-3. **Open MCP session to Toolbox** via `workiq/mcp_bridge.py`. POST `initialize` → capture `mcp-session-id` from response headers → POST `notifications/initialized`. Keep one `httpx.AsyncClient` open for the process. Use `DefaultAzureCredential` against scope `https://ai.azure.com/.default`. Every request carries header `Foundry-Features: Toolboxes=V1Preview`.
-4. **`tools/list` once** against the Toolbox. Cache the schemas in memory. Always query the live endpoint at boot — do not hard-code tool schemas.
-5. **Wrap each MCP tool as a Copilot `Tool`.** Sanitise the name (`.` and `-` → `_`) at this boundary only — preserve the original name for MCP `tools/call`. Copy description + `inputSchema`. Handler closes over `McpBridge.call_tool` and the per-invocation OBO context.
-6. **Register the tool handler** on the Copilot session so the bridge receives every tool call with the visiting user's delegated credential.
-7. **Start the Invocations server** via `azure-ai-agentserver-invocations`. Wire `/invocations` to `orchestrator.handle_invocation(action, payload, obo_context)`. The server emits root OTel spans automatically; children come from `observability.span(...)`.
+1. **Assert env policy** — `AZURE_AI_MODEL_DEPLOYMENT_NAME` present, `GITHUB_TOKEN` present, `FOUNDRY_PROJECT_ENDPOINT` present, `TOOLBOX_MCP_ENDPOINT` present, coordinator OBO confidential-client creds present. Hard-fail on any miss.
+2. **Construct the host `ChatAgent`** via `runtime/foundry_host.bootstrap()`. Authenticate to the Foundry model deployment with `DefaultAzureCredential` (Foundry-assigned Managed Identity). Configure MAF `AgentSession` persistence to `$HOME/agent_session/`. Keep one `ChatAgent` warm for process lifetime.
+3. **Declare a native MAF `MCPTool`** against the Toolbox endpoint, with `require_approval="never"`, mandatory `Foundry-Features: Toolboxes=V1Preview` header, and a per-call header injector that pulls the coordinator's WorkIQ token from `runtime/workiq_token.py` (deputy fallback applied silently on coordinator-token failure). Register the `MCPTool` on the `ChatAgent`. MAF handles `initialize` / `tools/list` / `tools/call` / approval-item plumbing.
+4. **Construct the codegen sub-agent** via `runtime/copilot_codegen.bootstrap()`. Read `GITHUB_TOKEN` from the OS env and pass it to `CopilotClient(github_token=…)` as a constructor argument (not via env propagation). Wrap as a MAF agent with `CopilotClient.AsAIAgent()` / `GitHubCopilotAgent`. Keep warm for process lifetime; only the `codegen/` module is allowed to invoke it.
+5. **Load skills** via `runtime/skill_loader.load_all("agent/skills/")` — parse each `SKILL.md` YAML frontmatter (`name`, `description`, optional `metadata`, `allowed-tools`), validate against the agentskills.io shape, and register each skill body with the host `ChatAgent` so the host model can select among them.
+6. **Start the Invocations server** via `azure-ai-agentserver-invocations`. Wire `/invocations` to `orchestrator.handle_invocation(action, payload, visitor_identity)`. The server emits root OTel spans automatically; MAF and `observability.span(…)` produce children.
 
-### 11.6 `McpBridge` shape
+### 11.6 Tool dispatch (native MAF `MCPTool`)
 
-Reference implementation: [architecture/samplecode_toolbox.py](architecture/samplecode_toolbox.py). The class lives at `agent/src/charter_agent/workiq/mcp_bridge.py` and must expose at least:
+MAF's `MCPTool` is the production code path. It handles MCP `initialize`, the `mcp-session-id` header, `notifications/initialized`, `tools/list` caching, `tools/call` (streamed where supported), and approval-item items. There is **no** project-owned `McpBridge` class on the production path.
 
-```python
-class McpBridge:
-    def __init__(self, endpoint: str, token: str) -> None: ...
-    async def initialize(self) -> str: ...                       # returns server name
-    async def list_tools(self) -> list[dict]: ...                # tools/list
-    async def call_tool(self, name: str, arguments: dict) -> str: ...  # tools/call, ALWAYS streamed
-    async def close(self) -> None: ...
-```
+Wiring requirements (set once at boot inside `runtime/foundry_host.py`):
 
-Plus module-level helpers:
+- `server_url` → `TOOLBOX_MCP_ENDPOINT`.
+- `server_label` → `"workiq"` (stable across Toolbox version switches).
+- `require_approval` → `"never"` (gating is done in `actions/`, not at the MCP layer).
+- Headers → always include `Foundry-Features: Toolboxes=V1Preview`. The `Authorization` header is **per-call**: a header-injector callback obtains the coordinator's WorkIQ delegated token from `runtime/workiq_token.py` (deputy fallback on failure) and stamps it on each outbound MCP request. Visitor identity is **not** propagated.
+- Toolbox auth (for the MAF → Toolbox channel itself) → `DefaultAzureCredential` against `https://ai.azure.com/.default`.
+- Fan out channel polls concurrently (`asyncio.gather`) in the capture loop — the 100-second non-streaming MCP-call timeout is per-call, not per-batch.
 
-- `_get_toolbox_token() -> str` — `DefaultAzureCredential` against `https://ai.azure.com/.default`.
-- `_get_toolbox_headers(token: str) -> dict` — `Authorization`, `Content-Type: application/json`, mandatory `Foundry-Features: Toolboxes=V1Preview`.
-- `_make_copilot_tools(bridge: McpBridge, mcp_tools: list[dict]) -> list[Tool]` — name sanitisation + handler closures.
-
-Hard constraints (don't try alternatives): `tools/call` must be streamed (`stream=True`); `send_ping()` returns 500 and must not be called; do not enumerate `prompts/list`.
+[architecture/samplecode_toolbox.py](architecture/samplecode_toolbox.py) is **reference-only**. Its hand-rolled `McpBridge` (initialize / `mcp-session-id` / streamed `tools/call` / name sanitisation `.`/`-` → `_`) is exactly what `MCPTool` replaces. Keep it as a wire-shape debugging aid; do not import it from production code.
 
 ### 11.7 Frontend BFF contract
 
@@ -421,11 +437,11 @@ The FastAPI BFF at `frontend/backend/` is the **only** caller of the agent's `/i
 |---|---|
 | Routing | URL `/p/{project_id}` → BFF extracts `project_id` and uses it as both the session key and the isolation key. |
 | Header `x-ms-chat-isolation-key` | Always `= project_id` (overrides any per-user scoping; collaborators share one Foundry session and one `$HOME`). |
-| Header `Authorization` | `Bearer {user_obo_token}` for the visiting user (MSAL flow). The agent uses this to call WorkIQ in OBO context. |
+| Header `Authorization` | `Bearer {visitor_token}` for the visiting user (MSAL flow). The agent uses this **only** for dashboard auth and role filtering. **Not** propagated to WorkIQ — WorkIQ always sees the coordinator's OBO token (invariant 3). |
 | Env `FOUNDRY_AGENT_SESSION_ID` | Set in the per-request Foundry client call to `project_id`. |
 | Auth | `msal` (BFF flow), signed-cookie session via `itsdangerous`. Interactive fallback if Conditional Access blocks; surface CA blocks as a dedicated exception kind in state. |
 | Dashboard response | Every state-mutating verb returns `dashboard` in the envelope; the SPA refreshes from that payload (no separate GET). |
-| SSE | `coordinator_chat` streams Copilot `SessionEvent`s as SSE `data:` frames terminated by `event: done`. Wire SSE pass-through from BFF to SPA. `render_dashboard` does **not** stream. |
+| SSE | `coordinator_chat` streams MAF `ChatAgent` response chunks as SSE `data:` frames terminated by `event: done`. Wire SSE pass-through from BFF to SPA. `render_dashboard` does **not** stream. |
 | Cold-start UX | Show "warming up…" spinner for 2–5s after 15-min idle on first verb. |
 | Per-role filter | Coordinator sees all; owner sees only their tasks; observer sees summary only. Enforced server-side by the `render-dashboard` skill. |
 
@@ -433,25 +449,28 @@ The FastAPI BFF at `frontend/backend/` is the **only** caller of the agent's `/i
 
 | Layer | What to test | Gate |
 |---|---|---|
-| `state.py` | Atomic write (temp+rename), Pydantic ↔ JSON round-trip, NDJSON append-only-ness | always |
-| `workiq/` wrappers | Correct MCP call shape, OBO propagation, response parsing (`respx` mocks) | always |
-| `workiq/mcp_bridge.py` | Name sanitisation (`.`/`-` → `_`), Copilot tool-call → MCP routing with OBO | always |
+| `state.py` | Atomic write (temp+rename), Pydantic ↔ JSON round-trip, NDJSON append-only-ness, MAF `AgentSession` persistence round-trip | always |
+| `workiq/` wrappers | Correct MCP call shape, token sourced from `runtime/workiq_token.py`, response parsing (`respx` mocks) | always |
+| `runtime/workiq_token.py` | Coordinator OBO refresh; deputy fallback on coordinator-token failure; correct claims (`upn`, `oid`) on the issued token | always |
+| `runtime/foundry_host.py` | Warm `ChatAgent` reuse within Foundry session; `MCPTool` header injector receives a fresh coordinator token per call | always |
+| `runtime/copilot_codegen.py` | PAT is passed via constructor (not env); only `codegen/` is allowed to import (import-linter); host model is **not** instantiated through this path | always |
+| `runtime/skill_loader.py` | Rejects invalid YAML frontmatter; `name` must equal parent dir; description length bounds | always |
 | `capture/handlers/*` | Cursor correctness (no missed/duplicated events across two polls), author filtering | always |
-| `capture/` classifier | Golden-file tests against ≥30 labelled fixture events from the board-pack scenario | `RUN_COPILOT_TESTS=1` |
+| `capture/` classifier | Golden-file tests against ≥30 labelled fixture events from the board-pack scenario | `RUN_HOST_MODEL_TESTS=1` |
 | `status/triangulate.py` | Spec §8.3 truth table — parameterised across all combos | always |
-| `actions/` | Double-execute is idempotent no-op; dismissed cannot be re-approved; only coordinator OBO accepted | always |
-| `codegen/` | Generated `consolidator.py` passes smoke-fixture signature check; failed generation retries exactly once then raises | `RUN_CODEGEN_TESTS=1` |
-| `copilot_runtime.py` | Boot env-var assertions; warm-client reuse within same Foundry session | always |
-| `charter/` | Ratification rejects invalid Charters; amendment increments `version`; orphan-dependency detection | always |
+| `actions/` | Double-execute is idempotent no-op; dismissed cannot be re-approved; outbound side-effects always sourced from coordinator OBO | always |
+| `codegen/` | Generated `consolidator.py` passes smoke-fixture signature check; failed generation retries exactly once then raises; codegen sub-agent really reaches GHCP (not the Foundry backend) | `RUN_CODEGEN_TESTS=1` |
+| `charter/` | Ratification rejects invalid Charters; amendment increments `version`; orphan-dependency detection; deputy UPN required and resolvable | always |
+| Boot smoke | Boot fails fast if any required env var is missing; both runtimes reach a healthy state on a real Foundry sandbox; coordinator OBO yields a valid WorkIQ token | Phase 1.5 gate |
 | E2E (Phase 4+) | Bundled sample meeting-notes scenario end-to-end against test M365 tenant + dev Foundry project | manual, phase-gated |
 
-Test infra: `pytest`, `pytest-asyncio`, `respx`, `freezegun`, `import-linter` (CI gate enforcing `copilot_runtime.py` as sole importer of `CopilotClient`).
+Test infra: `pytest`, `pytest-asyncio`, `respx`, `freezegun`, `import-linter` (CI gate enforcing `runtime/foundry_host.py` as the sole instantiator of `ChatAgent`, `runtime/copilot_codegen.py` as the sole instantiator of `CopilotClient`, and `codegen/` as the sole caller of `runtime/copilot_codegen.py`).
 
 ### 11.9 Dependency manifest
 
 Pin these in `agent/pyproject.toml`. Do not substitute without an ADR.
 
-**Agent runtime:** `azure-ai-agentserver-invocations`, `github-copilot-sdk`, `azure-identity`, `httpx`, `pydantic` v2, `python-docx`, `openpyxl` (pinned at agent level so generated `consolidator.py` cannot invent deps), `opentelemetry-api`, `opentelemetry-sdk`, `azure-monitor-opentelemetry-distro`, `azure-ai-projects` (optional, future portal calls).
+**Agent runtime:** `azure-ai-agentserver-invocations`, `agent-framework`, `agent-framework-azure-ai`, `github-copilot-sdk`, `azure-identity`, `msal` (coordinator OBO refresh in `runtime/workiq_token.py`), `httpx`, `pydantic` v2, `python-docx`, `openpyxl` (pinned at agent level so generated `consolidator.py` cannot invent deps), `opentelemetry-api`, `opentelemetry-sdk`, `azure-monitor-opentelemetry-distro`, `azure-ai-projects` (optional, future portal calls).
 
 **Agent dev/CI:** `import-linter`, `ruff`, `pyright`, `pytest`, `pytest-asyncio`, `respx`, `freezegun`.
 
@@ -465,13 +484,14 @@ Per [spec §9](functional-specs/project_workspace_spec.md). Do not skip ahead; e
 
 | Phase | Scope | Verbs newly exercised | Demoable outcome |
 |---|---|---|---|
-| 1. Skeleton | `__main__`, `copilot_runtime` (warm-only), `orchestrator`, `state` (counter only), frontend skeleton | `echo` | Two browsers, same `project_id`, same counter; Copilot session resumed across requests |
+| 1. Skeleton | `__main__`, `runtime/foundry_host` (warm-only), `runtime/skill_loader` (load empty set), `orchestrator`, `state` (counter only), frontend skeleton | `echo` | Two browsers, same `project_id`, same counter; MAF `AgentSession` resumed across requests |
+| **1.5. Dual-runtime smoke** — **gate** | `runtime/copilot_codegen` warmup; trivial `consolidate` skill that asks the codegen sub-agent for a one-line Python file; coordinator OBO `runtime/workiq_token` exercised end-to-end against test tenant | (none new — internal smoke only) | Host runtime answers a chat turn on Foundry model; codegen sub-agent reaches GHCP (verified via OTel attribute / token-issuer header) and writes `$HOME/code/smoke.py`; coordinator OBO yields a usable WorkIQ token | 
 | 2. Charter & kickoff | `charter/`, `kickoff/`, `workiq/` (Mail/Files/Teams/Tasks), `project-kickoff` skill | `propose_charter`, `ratify_charter` | Real M365 fan-out for the bundled sample scenario |
-| 3. Skills + exceptional codegen | All `agent/skills/*`, `codegen/` (consolidator only), `consolidation/` | (exercised by Phase 2/4 paths) | Skills auto-loaded; generated `consolidator.py` visible in sandbox |
+| 3. Skills + exceptional codegen | All `agent/skills/*`, `codegen/` (consolidator only), `consolidation/` | (exercised by Phase 2/4 paths) | Skills loaded by `runtime/skill_loader`; generated `consolidator.py` visible in sandbox |
 | 4. Capture loop | `capture/`, `status/triangulate`, `actions/` (draft only) | `render_dashboard` | Live status changes as deliveries land on channels |
 | 5. Dashboard + approvals | SPA, exceptions panel, `actions/execute`, `actions/dismiss`, coordinator chat | `execute_suggested`, `dismiss_suggested`, `coordinator_chat` | Approve real Teams nudge sent as coordinator OBO |
 | 6. Consolidation + closure | `consolidation/`, `charter/amend`, close path, `amend-charter` skill | `amend_charter`, `close_project`, `override_capture` | Reconciliation fires; project closes; deliverable on SharePoint |
-| 7. Hardening | All modules; idempotency edge cases, CA-block recovery, audit-log review | — | Production-ready: tests, recovery, telemetry complete |
+| 7. Hardening | All modules; idempotency edge cases, CA-block recovery (deputy fallback), audit-log review | — | Production-ready: tests, recovery, telemetry complete |
 
 ---
 
@@ -483,7 +503,7 @@ Per [spec §9](functional-specs/project_workspace_spec.md). Do not skip ahead; e
 - [Sample meeting-notes file](test-fixtures/sample-meeting-notes.md) — **test input only**, one of many possible project shapes; not a normative scenario
 - [Dashboard UI mock](test-fixtures/dashboard-mock.html) — illustrative reference for spec §5.6, depicting how the dashboard would render *for that particular sample's data*. Not the implementation, not the design contract.
 - [test-fixtures/README.md](test-fixtures/README.md) — banner explaining the non-normative status of everything in that folder
-- [Toolbox + Copilot-SDK reference sample](architecture/samplecode_toolbox.py)
+- [Toolbox + Copilot-SDK reference sample](architecture/samplecode_toolbox.py) — **reference-only** under the dual-runtime architecture; native MAF `MCPTool` is the production path
 - [agentskills.io specification](https://agentskills.io/specification) — the format every skill in `agent/skills/` must conform to (invariant 1)
 - [agentskills.io client showcase](https://agentskills.io/clients) — clients (Claude Code, VS Code, Goose, Gemini CLI, Kiro, fast-agent, …) where a SKILL.md authored here can be loaded for isolated testing
 - [skills-ref validator](https://github.com/agentskills/agentskills/tree/main/skills-ref) — used in CI to gate PRs that touch `agent/skills/`
