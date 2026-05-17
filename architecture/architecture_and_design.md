@@ -14,14 +14,15 @@ These are the principles from the requirement spec, expressed as the design deci
 
 | Principle (from spec) | Concrete design decision |
 |---|---|
-| Generic over project-specific | Three layers of variability: **Charter (data)** → **Copilot SDK skills (declarative behaviour)** → **optional Copilot-generated `consolidator.py` (deterministic code, exceptional)** → **generic agent (constant)**. Nothing else varies per project. |
+| **Skills-first, agentskills.io-conformant** | All reusable agent capabilities (classify, draft, validate, consolidate, propose, render) are packaged as **Agent Skills** under `agent/skills/{name}/`, each containing a `SKILL.md` valid per the open [agentskills.io spec](https://agentskills.io/specification) — required YAML `name`/`description`, optional `metadata`/`license`/`compatibility`/`allowed-tools`, optional `scripts/`/`references/`/`assets/` subdirs, progressive disclosure (discovery → activation → execution). The Copilot SDK's `skills/*/SKILL.md` auto-loader is the runtime. See [AGENTS.md §4.3](../AGENTS.md#43-agent-skills-format-agentskillsio-conformance) for the format contract and [§4.4](../AGENTS.md#44-core-code-vs-skill--the-decision-rule) for the core-vs-skill decision rule. |
+| Generic over project-specific | Three layers of variability: **Charter (data)** → **Agent Skills (declarative behaviour)** → **optional Copilot-generated `consolidator.py` (deterministic code, exceptional)** → **generic agent (constant)**. Nothing else varies per project. |
 | WorkIQ is delegated-only | All WorkIQ calls funnel through one wrapper module that requires an OBO token argument; no path can call WorkIQ without one. |
 | No background workers | The agent has *one* entry point — `handle_invocation(action, payload, obo_context)`. Every behaviour, including dashboard refresh, is reached from there. |
 | State lives in `$HOME` | A single `state.py` module is the only place that touches files in `$HOME`. Atomic write-via-temp-then-rename for every mutation. |
 | Charter immutability | `charter.json` is read by everything; written only by `charter/ratify.py` and `charter/amend.py`. Enforced by a module-level lock plus a CI test that greps for forbidden writers. |
 | Human-in-the-loop outbound | A `SuggestedAction` is the only path to an outbound side-effect. Two functions: `draft(...)` (returns a `SuggestedAction`, writes to state) and `execute(action_id, coordinator_obo)` (idempotent, OBO-as-coordinator). |
 | Channel extensibility | Channel handlers register with `@register_channel("sharepoint_file")` decorators; the capture loop iterates the registry; new channels are additive. |
-| Single agent runtime | Exactly one `CopilotClient` per process, owned by `copilot_runtime.py`; one Copilot session per Foundry session, resumed via `FOUNDRY_AGENT_SESSION_ID`. No second LLM call path. See [AGENTS.md §3 invariant 11](../AGENTS.md). |
+| Single agent runtime | Exactly one `CopilotClient` per process, owned by `copilot_runtime.py`; one Copilot session per Foundry session, resumed via `FOUNDRY_AGENT_SESSION_ID`. No second LLM call path. See [AGENTS.md §3 invariant 12](../AGENTS.md). |
 
 ---
 
@@ -643,7 +644,7 @@ The SPA is intentionally minimal: ~10 components (dashboard shell, task tile, ex
 | `codegen/` | Generated `consolidator.py` passes the smoke fixture; failed generation retried exactly once then surfaces an exception | unit tests gated by `RUN_CODEGEN_TESTS` env (uses a real Copilot session) |
 | `copilot_runtime.py` | Boot-time env-var assertions; warm-client reuse across `get_or_create_session` calls within a Foundry session | unit tests with patched env |
 | `charter/` | Ratification rejects invalid Charters; amendment increments version; orphan-dependency check works | unit tests |
-| End-to-end (Phase 4+) | Project Lumen flow: kickoff → simulated deliveries on each channel → consolidation → close | integration test against a dedicated test M365 tenant + a dev Foundry project |
+| End-to-end (Phase 4+) | Bundled sample meeting-notes flow: kickoff → simulated deliveries on each channel → consolidation → close | integration test against a dedicated test M365 tenant + a dev Foundry project |
 
 ---
 
@@ -652,7 +653,7 @@ The SPA is intentionally minimal: ~10 components (dashboard shell, task tile, ex
 | Phase | Modules in scope | Verb(s) exercised | Demoable outcome |
 |---|---|---|---|
 | 1. Skeleton | `__main__`, `copilot_runtime` (warm-only), `orchestrator`, `state` (counter only), frontend skeleton | echo verb | Two browsers, same project ID, same counter; same Copilot session resumed across requests |
-| 2. Charter & kickoff | `charter/`, `kickoff/`, `workiq/` (Mail, Files, Teams, Tasks), initial skills (`project-kickoff`) | `propose_charter`, `ratify_charter` | Real M365 fan-out for Project Lumen |
+| 2. Charter & kickoff | `charter/`, `kickoff/`, `workiq/` (Mail, Files, Teams, Tasks), initial skills (`project-kickoff`) | `propose_charter`, `ratify_charter` | Real M365 fan-out for the bundled sample scenario |
 | 3. Skills + exceptional codegen | `agent/skills/*` (status-refresh, capture-classify, compliance-check, render-dashboard, draft-outbound, consolidate), `codegen/` (consolidator only), `consolidation/` (stub call) | (used by Phase 2 path) | Skills auto-loaded; show generated `consolidator.py` in the sandbox |
 | 4. Capture loop | `capture/`, `status/`, `actions/` (draft only via `draft-outbound` skill) | `render_dashboard` | Live status changes as files/messages change |
 | 5. Dashboard + approvals | Frontend SPA + exceptions panel, `actions/.execute` | `execute_suggested`, `coordinator_chat` | Approve a real Teams nudge sent as the coordinator |

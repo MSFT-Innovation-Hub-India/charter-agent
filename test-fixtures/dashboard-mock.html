@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Dashboard mock — illustrative, sample data only</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #1f2328;
+    --muted: #57606a;
+    --line: #d0d7de;
+    --line-soft: #eaeef2;
+    --accent: #0969da;
+    --assigned: #6e7781;
+    --inprogress: #0969da;
+    --atrisk: #bf3989;
+    --submitted: #1a7f37;
+    --question: #9a6700;
+    --reconcile: #8250df;
+    --pill-bg: #eef1f4;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  header.app {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  header.app h1 {
+    margin: 0; font-size: 16px; font-weight: 600;
+  }
+  header.app .url {
+    font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted);
+  }
+  .banner {
+    background: #fff8c5; color: #54470c;
+    border-bottom: 1px solid #d4a72c;
+    padding: 8px 24px; font-size: 12.5px;
+  }
+  .banner b { font-weight: 600; }
+  .controls {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .btn {
+    background: var(--accent); color: white; border: 0;
+    padding: 6px 12px; border-radius: 6px; font-size: 13px;
+    cursor: pointer;
+  }
+  .btn.secondary { background: var(--panel); color: var(--ink); border: 1px solid var(--line); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .moment {
+    font-size: 12px; color: var(--muted);
+    padding: 0 6px;
+  }
+  main {
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    gap: 16px;
+    padding: 16px 24px;
+    max-width: 1400px; margin: 0 auto;
+  }
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+  }
+  section.panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+  }
+  section.panel h2 {
+    margin: 0 0 10px 0; font-size: 13px; font-weight: 600;
+    color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  /* Consolidated progress */
+  .progress-line {
+    display: flex; align-items: center; gap: 12px;
+    margin-top: 4px;
+  }
+  .progress-track {
+    flex: 1; height: 8px; background: var(--line-soft);
+    border-radius: 4px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; background: var(--submitted);
+    transition: width 0.4s ease;
+  }
+  .progress-meta {
+    font-size: 12px; color: var(--muted);
+    display: flex; justify-content: space-between;
+    margin-top: 6px;
+  }
+  .deliverable-link {
+    display: inline-block; margin-top: 8px;
+    font-size: 13px; color: var(--accent); text-decoration: none;
+  }
+  .deliverable-link.hidden { display: none; }
+  /* Tile grid */
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+  }
+  .tile {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    cursor: pointer;
+    background: var(--panel);
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .tile:hover { border-color: var(--accent); }
+  .tile.expanded { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .tile .name { font-weight: 600; font-size: 14px; }
+  .tile .role { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .tile .section { font-size: 13px; margin-bottom: 4px; }
+  .tile .watching {
+    font: 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted); margin-bottom: 8px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .pill {
+    display: inline-block;
+    padding: 3px 8px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 600;
+    color: white;
+  }
+  .pill.assigned   { background: var(--assigned); }
+  .pill.inprogress { background: var(--inprogress); }
+  .pill.atrisk     { background: var(--atrisk); }
+  .pill.submitted  { background: var(--submitted); }
+  /* Drill-in (inline, non-modal) */
+  .drillin {
+    margin-top: 10px;
+    border-top: 1px dashed var(--line);
+    padding-top: 10px;
+    font-size: 13px;
+    display: none;
+  }
+  .tile.expanded .drillin { display: block; }
+  .drillin h4 {
+    margin: 0 0 6px 0; font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .signals { list-style: none; padding: 0; margin: 0 0 8px 0; }
+  .signals li {
+    padding: 4px 0; border-bottom: 1px solid var(--line-soft);
+    display: flex; gap: 8px;
+  }
+  .signals li:last-child { border-bottom: 0; }
+  .signal-key { color: var(--muted); min-width: 96px; font-size: 12px; }
+  .signal-val { flex: 1; font-size: 12.5px; }
+  .decision {
+    background: var(--pill-bg); padding: 8px 10px; border-radius: 6px;
+    margin-top: 6px; font-size: 12.5px;
+  }
+  .decision b { font-weight: 600; }
+  .obo-footer {
+    margin-top: 8px; font-size: 11.5px; color: var(--muted); font-style: italic;
+  }
+  /* Activity stream */
+  .activity { max-height: 360px; overflow-y: auto; }
+  .activity .group-hdr {
+    position: sticky; top: 0;
+    background: var(--panel);
+    padding: 6px 0 4px 0;
+    font-size: 11.5px; color: var(--muted); font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .activity .entry {
+    padding: 6px 0; font-size: 12.5px;
+    border-bottom: 1px solid var(--line-soft);
+    display: grid; grid-template-columns: 64px 100px 1fr; gap: 8px;
+  }
+  .activity .entry:last-child { border-bottom: 0; }
+  .activity .at { color: var(--muted); font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .activity .kind {
+    font-size: 11px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.03em;
+  }
+  /* Exceptions */
+  .exception {
+    padding: 8px 10px; border-radius: 6px;
+    border-left: 3px solid var(--question);
+    background: #fffbeb; margin-bottom: 8px; font-size: 12.5px;
+  }
+  .exception.atrisk { border-left-color: var(--atrisk); background: #fdf3f8; }
+  .exception.reconcile { border-left-color: var(--reconcile); background: #f6f0ff; }
+  .exception .label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--muted);
+    margin-bottom: 2px;
+  }
+  .exception .body { color: var(--ink); }
+  .exception .actions { margin-top: 6px; display: flex; gap: 6px; }
+  .exception .btn { padding: 3px 8px; font-size: 11.5px; }
+  .empty {
+    color: var(--muted); font-size: 13px; padding: 8px 0; font-style: italic;
+  }
+</style>
+</head>
+<body>
+
+<header class="app">
+  <div>
+    <h1>Project Lumen — Recovery proposal</h1>
+    <div class="url">workspace.acme.com/p/lumen-2026-05</div>
+  </div>
+  <div class="controls">
+    <span class="moment" id="momentLabel">Moment 1 / 5 — Kickoff (Day 0)</span>
+    <button class="btn secondary" id="resetBtn">Reset</button>
+    <button class="btn" id="advanceBtn">Advance the session →</button>
+  </div>
+</header>
+
+<div class="banner">
+  <b>Illustrative mock — sample data only, not a normative design.</b>
+  This page renders one specific sample project (the bundled meeting-notes test fixture) so reviewers can see what the dashboard <i>could</i> look like for one shape of work.
+  The real dashboard must adapt to whatever the Charter specifies for any project — owner count, sections, watch channels, exceptions, and activity volume are all dynamic and have no fixed layout.
+  See <code>functional-specs/project_workspace_spec.md §5.6</code> for the binding requirements.
+</div>
+
+<main>
+  <div>
+    <section class="panel">
+      <h2>Consolidated proposal</h2>
+      <div class="progress-line">
+        <div class="progress-track"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+        <div id="progressPct" style="font-weight:600; min-width:48px; text-align:right;">0%</div>
+      </div>
+      <div class="progress-meta">
+        <span id="progressCount">0 of 3 sections submitted</span>
+        <span>Due Day 5</span>
+      </div>
+      <a class="deliverable-link hidden" id="deliverableLink" href="#">Open the consolidated deliverable in SharePoint →</a>
+    </section>
+
+    <section class="panel">
+      <h2>Owners</h2>
+      <div class="tiles" id="tiles"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Activity</h2>
+      <div class="activity" id="activity"></div>
+    </section>
+  </div>
+
+  <aside>
+    <section class="panel">
+      <h2>Exceptions</h2>
+      <div id="exceptions"></div>
+    </section>
+  </aside>
+</main>
+
+<script>
+/* ------------------------------------------------------------------ *
+ * Dashboard mock — sample data only.
+ *
+ * This file is shipped alongside the requirements spec PURELY as a
+ * visual reference for reviewers. It renders ONE specific sample
+ * project (the bundled meeting-notes fixture) so reviewers can see
+ * how the surfaces from spec §5.6 lay out for one shape of work.
+ *
+ * It is NOT the implementation, NOT the contract, and the sample's
+ * project name, owners, sections, statuses, and timeline have NO
+ * special status in the design. The real dashboard must be fully
+ * data-driven from charter.json + state.json and adapt to any
+ * project shape — spec §5.6 "Dynamic-shape contract".
+ * ------------------------------------------------------------------ */
+
+/* Charter-like sample shape — three owners for the sample scenario. */
+const OWNERS = [
+  {
+    id: "anita",
+    name: "Anita Rao",
+    role: "Programme Director",
+    section: "Recovery timeline & approvals",
+    watching: "SharePoint › Lumen › 01-timeline.docx",
+  },
+  {
+    id: "vishakha",
+    name: "Vishakha Menon",
+    role: "Lead Architect",
+    section: "Backfill plan & architectural impact",
+    watching: "SharePoint › Lumen › 02-architecture.docx",
+  },
+  {
+    id: "marcus",
+    name: "Marcus Lee",
+    role: "Finance Partner",
+    section: "Cost recovery model",
+    watching: "SharePoint › Lumen › 03-financials.xlsx",
+  },
+];
+
+/* Five moments. Each declares the world-state at that point.        */
+/* Status: assigned | inprogress | atrisk | submitted                */
+const MOMENTS = [
+  {
+    label: "Moment 1 / 5 — Kickoff (Day 0)",
+    statuses: { anita: "assigned", vishakha: "assigned", marcus: "assigned" },
+    signals: {
+      anita:    { file: "—", teams: "—", email: "Briefing email delivered", calendar: "Available all week" },
+      vishakha: { file: "—", teams: "—", email: "Briefing email delivered", calendar: "Travel Day 2" },
+      marcus:   { file: "—", teams: "—", email: "Briefing email delivered", calendar: "Available all week" },
+    },
+    decisions: {
+      anita:    "Just assigned. No signals yet.",
+      vishakha: "Just assigned. No signals yet.",
+      marcus:   "Just assigned. No signals yet.",
+    },
+    exceptions: [],
+    submittedCount: 0,
+  },
+  {
+    label: "Moment 2 / 5 — Day 1 (work begins)",
+    statuses: { anita: "inprogress", vishakha: "assigned", marcus: "inprogress" },
+    signals: {
+      anita:    { file: "Edited 03:12 ago", teams: "Posted in #lumen-recovery", email: "—", calendar: "Available" },
+      vishakha: { file: "—", teams: "—", email: "—", calendar: "Travel Day 2 (auto-reply not yet seen)" },
+      marcus:   { file: "Opened 01:48 ago", teams: "—", email: "Asked clarifying question on cost basis", calendar: "Available" },
+    },
+    decisions: {
+      anita:    "<b>InProgress.</b> File activity + Teams thread observed today.",
+      vishakha: "<b>Assigned.</b> No signals yet — within expected window.",
+      marcus:   "<b>InProgress.</b> File opened; clarifying question routed back to coordinator.",
+    },
+    exceptions: [
+      { kind: "question", title: "Clarify cost basis for Marcus", body: "Marcus asked whether to use Q1 or Q2 baseline. Coordinator should reply." },
+    ],
+    submittedCount: 0,
+  },
+  {
+    label: "Moment 3 / 5 — Day 2 (travel detected)",
+    statuses: { anita: "inprogress", vishakha: "atrisk", marcus: "inprogress" },
+    signals: {
+      anita:    { file: "Edited 00:24 ago", teams: "Active in #lumen-recovery", email: "—", calendar: "Available" },
+      vishakha: { file: "Not opened", teams: "—", email: "Out-of-office auto-reply detected", calendar: "Travel Day 2 (confirmed)" },
+      marcus:   { file: "Edited 02:10 ago", teams: "—", email: "Cost question resolved", calendar: "Available" },
+    },
+    decisions: {
+      anita:    "<b>InProgress.</b> Steady progress, on track for Day 4 submission.",
+      vishakha: "<b>At risk.</b> Travel auto-reply detected on Day 2. Recovery date may slip past Day 4. Drafted nudge for coordinator approval.",
+      marcus:   "<b>InProgress.</b> Cost question resolved by Anita; back to drafting.",
+    },
+    exceptions: [
+      { kind: "atrisk", title: "Vishakha flagged At risk", body: "Travel auto-reply detected; no file activity. Suggested action: send gentle nudge requesting an ETA. <i>(Drafted, awaiting your approval.)</i>" },
+    ],
+    submittedCount: 0,
+  },
+  {
+    label: "Moment 4 / 5 — Day 4 (submissions land)",
+    statuses: { anita: "submitted", vishakha: "inprogress", marcus: "submitted" },
+    signals: {
+      anita:    { file: "Submitted to Lumen › 01-timeline.docx", teams: "—", email: "—", calendar: "Available" },
+      vishakha: { file: "Edited 00:08 ago", teams: "Replied to nudge: \"draft tonight\"", email: "Back from travel", calendar: "Available" },
+      marcus:   { file: "Submitted to Lumen › 03-financials.xlsx", teams: "—", email: "—", calendar: "Available" },
+    },
+    decisions: {
+      anita:    "<b>Submitted.</b> Section delivered on Day 4. Classifier confidence 0.96.",
+      vishakha: "<b>InProgress.</b> Back from travel, drafting now. Expected end-of-day.",
+      marcus:   "<b>Submitted.</b> Section delivered on Day 4. Classifier confidence 0.93.",
+    },
+    exceptions: [],
+    submittedCount: 2,
+  },
+  {
+    label: "Moment 5 / 5 — Day 5 (consolidation + reconciliation)",
+    statuses: { anita: "submitted", vishakha: "submitted", marcus: "submitted" },
+    signals: {
+      anita:    { file: "Submitted Day 4", teams: "—", email: "—", calendar: "—" },
+      vishakha: { file: "Submitted Day 5 (06:14 ago)", teams: "—", email: "—", calendar: "—" },
+      marcus:   { file: "Submitted Day 4", teams: "—", email: "—", calendar: "—" },
+    },
+    decisions: {
+      anita:    "<b>Submitted.</b>",
+      vishakha: "<b>Submitted.</b> Late vs target by ~12h but within Day-5 deadline.",
+      marcus:   "<b>Submitted.</b>",
+    },
+    exceptions: [
+      { kind: "reconcile", title: "Reconciliation: recovery date vs backfill availability", body: "Anita's recovery timeline assumes architect backfill from Day 7. Vishakha's plan shows backfill not available until Day 9. Two-day gap. Suggested: ask both to align before proposal ships." },
+    ],
+    submittedCount: 3,
+  },
+];
+
+/* Activity stream entries — grow as moments advance.                */
+const ACTIVITY_BY_MOMENT = [
+  [ // Moment 1
+    { at: "09:02", kind: "kickoff", text: "Charter ratified by Sanjeev (coordinator). 3 owners, 3 sections, Day-5 deadline." },
+    { at: "09:03", kind: "kickoff", text: "SharePoint workspace created: <code>/sites/lumen-2026-05/</code>" },
+    { at: "09:03", kind: "kickoff", text: "Section templates seeded to <code>Lumen/01-timeline.docx</code>, <code>02-architecture.docx</code>, <code>03-financials.xlsx</code>." },
+    { at: "09:04", kind: "kickoff", text: "Briefing emails sent to Anita, Vishakha, Marcus (in coordinator OBO context)." },
+    { at: "09:04", kind: "kickoff", text: "Outlook tasks created for all three owners with Day-4 internal deadline." },
+    { at: "09:05", kind: "kickoff", text: "Teams kickoff post published in #lumen-recovery." },
+  ],
+  [ // Moment 2 (additive)
+    { at: "Day 1 · 11:22", kind: "capture",  text: "WorkIQ Files: Anita edited <code>01-timeline.docx</code> (+18 paragraphs)." },
+    { at: "Day 1 · 11:24", kind: "classify", text: "Classified as <b>InProgress</b> signal for Anita. Confidence 0.91." },
+    { at: "Day 1 · 13:05", kind: "capture",  text: "WorkIQ Teams: Marcus posted clarifying question in #lumen-recovery." },
+    { at: "Day 1 · 13:06", kind: "classify", text: "Classified as <b>question</b> for Marcus's task. Routed to exceptions." },
+    { at: "Day 1 · 13:06", kind: "draft",    text: "Suggested action drafted: forward clarification to coordinator." },
+  ],
+  [ // Moment 3 (additive)
+    { at: "Day 2 · 08:11", kind: "capture",  text: "WorkIQ Mail: Out-of-office auto-reply detected on Vishakha's address. Returns Day 3 evening." },
+    { at: "Day 2 · 08:11", kind: "capture",  text: "WorkIQ Calendar: Travel block confirmed Day 2 → Day 3." },
+    { at: "Day 2 · 08:12", kind: "classify", text: "Status for Vishakha re-triangulated: <b>At risk</b> (no file activity + OOO)." },
+    { at: "Day 2 · 08:12", kind: "draft",    text: "Suggested action: gentle nudge requesting ETA. <i>Awaiting coordinator approval.</i>" },
+    { at: "Day 2 · 09:30", kind: "execute",  text: "Coordinator approved cost-basis answer to Marcus → sent in coordinator OBO context." },
+  ],
+  [ // Moment 4 (additive)
+    { at: "Day 3 · 19:40", kind: "execute",  text: "Coordinator approved nudge to Vishakha → sent." },
+    { at: "Day 3 · 21:02", kind: "capture",  text: "WorkIQ Teams: Vishakha replied — \"draft tonight\"." },
+    { at: "Day 4 · 10:14", kind: "capture",  text: "WorkIQ Files: Anita marked section <code>01-timeline.docx</code> as final." },
+    { at: "Day 4 · 10:15", kind: "classify", text: "Anita's task → <b>Submitted</b>. Confidence 0.96." },
+    { at: "Day 4 · 15:48", kind: "capture",  text: "WorkIQ Files: Marcus uploaded final <code>03-financials.xlsx</code>." },
+    { at: "Day 4 · 15:48", kind: "classify", text: "Marcus's task → <b>Submitted</b>. Confidence 0.93." },
+    { at: "Day 4 · 15:49", kind: "compliance", text: "Compliance check on Marcus's submission: 4/4 runbook requirements met." },
+  ],
+  [ // Moment 5 (additive)
+    { at: "Day 5 · 11:36", kind: "capture",  text: "WorkIQ Files: Vishakha submitted <code>02-architecture.docx</code>." },
+    { at: "Day 5 · 11:37", kind: "classify", text: "Vishakha's task → <b>Submitted</b>. Confidence 0.94." },
+    { at: "Day 5 · 11:37", kind: "compliance", text: "Compliance check on Vishakha's submission: 3/3 runbook requirements met." },
+    { at: "Day 5 · 12:00", kind: "consolidate", text: "Consolidation skill invoked <code>$HOME/code/consolidator.py</code>." },
+    { at: "Day 5 · 12:01", kind: "consolidate", text: "Reconciliation flag raised: recovery date (Day 7) vs backfill availability (Day 9). Surfaced to exceptions." },
+    { at: "Day 5 · 12:01", kind: "consolidate", text: "Draft proposal assembled at <code>/sites/lumen-2026-05/Lumen-Recovery-Proposal-DRAFT.docx</code>." },
+  ],
+];
+
+/* ----------------------- rendering ----------------------- */
+
+let currentMoment = 0;
+let expandedOwnerId = null;
+
+function statusLabel(s) {
+  return { assigned: "Assigned", inprogress: "In progress", atrisk: "At risk", submitted: "Submitted" }[s];
+}
+
+function render() {
+  const m = MOMENTS[currentMoment];
+  document.getElementById("momentLabel").textContent = m.label;
+  document.getElementById("advanceBtn").disabled = (currentMoment === MOMENTS.length - 1);
+
+  // Progress
+  const total = OWNERS.length;
+  const pct = Math.round((m.submittedCount / total) * 100);
+  document.getElementById("progressFill").style.width = pct + "%";
+  document.getElementById("progressPct").textContent = pct + "%";
+  document.getElementById("progressCount").textContent =
+    m.submittedCount + " of " + total + " sections submitted";
+  const link = document.getElementById("deliverableLink");
+  if (m.submittedCount === total) link.classList.remove("hidden");
+  else link.classList.add("hidden");
+
+  // Tiles
+  const tilesEl = document.getElementById("tiles");
+  tilesEl.innerHTML = "";
+  OWNERS.forEach(o => {
+    const st = m.statuses[o.id];
+    const sig = m.signals[o.id];
+    const dec = m.decisions[o.id];
+    const isOpen = (expandedOwnerId === o.id);
+    const div = document.createElement("div");
+    div.className = "tile" + (isOpen ? " expanded" : "");
+    div.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+        <div>
+          <div class="name">${o.name}</div>
+          <div class="role">${o.role}</div>
+        </div>
+        <span class="pill ${st}">${statusLabel(st)}</span>
+      </div>
+      <div class="section">${o.section}</div>
+      <div class="watching" title="${o.watching}">${o.watching}</div>
+      <div class="drillin">
+        <h4>Signals the agent triangulated</h4>
+        <ul class="signals">
+          <li><span class="signal-key">File</span>     <span class="signal-val">${sig.file}</span></li>
+          <li><span class="signal-key">Teams</span>    <span class="signal-val">${sig.teams}</span></li>
+          <li><span class="signal-key">Email</span>    <span class="signal-val">${sig.email}</span></li>
+          <li><span class="signal-key">Calendar</span> <span class="signal-val">${sig.calendar}</span></li>
+        </ul>
+        <div class="decision">${dec}</div>
+        <div class="obo-footer">Refreshed on this visit, in Sanjeev's user context · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+      </div>
+    `;
+    div.addEventListener("click", () => {
+      expandedOwnerId = (expandedOwnerId === o.id) ? null : o.id;
+      render();
+    });
+    tilesEl.appendChild(div);
+  });
+
+  // Exceptions
+  const excEl = document.getElementById("exceptions");
+  excEl.innerHTML = "";
+  if (m.exceptions.length === 0) {
+    excEl.innerHTML = `<div class="empty">Nothing needs you right now.</div>`;
+  } else {
+    m.exceptions.forEach(e => {
+      const div = document.createElement("div");
+      div.className = "exception " + e.kind;
+      div.innerHTML = `
+        <div class="label">${e.kind === "atrisk" ? "At risk" : e.kind === "reconcile" ? "Reconciliation" : "Question"}</div>
+        <div class="body"><b>${e.title}</b><br>${e.body}</div>
+        <div class="actions">
+          <button class="btn">Approve</button>
+          <button class="btn secondary">Dismiss</button>
+        </div>
+      `;
+      excEl.appendChild(div);
+    });
+  }
+
+  // Activity stream — reverse chronological, sticky group header.
+  // Accumulate moments 0..currentMoment, newest first.
+  const allEntries = [];
+  for (let i = 0; i <= currentMoment; i++) {
+    ACTIVITY_BY_MOMENT[i].forEach(en => allEntries.push(en));
+  }
+  allEntries.reverse();
+  const actEl = document.getElementById("activity");
+  actEl.innerHTML = `<div class="group-hdr">Most recent first</div>` +
+    allEntries.map(e =>
+      `<div class="entry">
+         <div class="at">${e.at}</div>
+         <div class="kind">${e.kind}</div>
+         <div>${e.text}</div>
+       </div>`).join("");
+}
+
+document.getElementById("advanceBtn").addEventListener("click", () => {
+  if (currentMoment < MOMENTS.length - 1) {
+    currentMoment += 1;
+    render();
+  }
+});
+document.getElementById("resetBtn").addEventListener("click", () => {
+  currentMoment = 0;
+  expandedOwnerId = null;
+  render();
+});
+
+render();
+</script>
+</body>
+</html>

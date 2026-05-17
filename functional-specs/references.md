@@ -217,6 +217,29 @@ What it pins down for our build (don't re-derive any of this from first principl
 - **Build/deploy gotcha.** Container images must be `linux/amd64`. On Apple Silicon, use `docker build --platform=linux/amd64 ...`. `azd deploy` does an ACR remote build and avoids this.
 
 ---
+
+## 10. Agent Skills format — the open agentskills.io specification
+
+The skills under `agent/skills/` are **not** a Copilot-SDK-only idea — they conform to the open **[agentskills.io](https://agentskills.io/specification)** specification (Anthropic-originated, now adopted by GitHub Copilot, VS Code, Claude Code, Goose, Gemini CLI, Kiro, fast-agent, Letta, Mistral Vibe). This is invariant 1 of the project ([AGENTS.md §3](../AGENTS.md#3-non-negotiable-architectural-invariants)) and is contractually load-bearing: every `agent/skills/{name}/SKILL.md` must be a valid Agent Skill per the spec.
+
+- **Specification** — directory layout, required YAML frontmatter fields (`name`, `description`), optional fields (`license`, `compatibility`, `metadata`, `allowed-tools`), naming rules (lowercase a–z / digits / hyphens, ≤64 chars, must match parent directory), description rules (≤1024 chars, must convey *what* and *when*), progressive disclosure stages (Discovery → Activation → Execution), and the optional `scripts/`, `references/`, `assets/` subdirs.
+  https://agentskills.io/specification
+
+- **Client showcase** — list of clients that load agentskills.io-compatible skills (GitHub Copilot is on it, which is why our Copilot SDK auto-load works as a compliant runtime). A skill authored in this repo can be tested in Claude Code, VS Code Copilot, Goose, or Gemini CLI without modification.
+  https://agentskills.io/clients
+
+- **`skills-ref` validator** — the upstream CLI that validates a skill directory against the spec. We run `skills-ref validate ./agent/skills/*` in CI on every PR that touches the skills directory.
+  https://github.com/agentskills/agentskills/tree/main/skills-ref
+
+What this gives us in practice (and what AGENTS.md §4.3 codifies as our local conventions on top):
+
+- **Portability** — the same `SKILL.md` body can be loaded by any agentskills.io client for isolated authoring/testing without standing up the full Foundry agent.
+- **Auditability** — skills are versioned files reviewed in PRs, not opaque prompt strings buried in code.
+- **A sharp core/skill split** — see [AGENTS.md §4.4](../AGENTS.md#44-core-code-vs-skill--the-decision-rule). Deterministic plumbing (state I/O, cursors, idempotency, transport, dispatch) stays as code; reasoning/generation/judgement is always a skill.
+
+**Out of scope, deliberately:** Claude-Code-specific extension mechanisms — `plugins/`, per-skill `mcp.json`, slash commands — are *not* part of the agentskills.io spec and *not* used here. Tool discovery for this project is the **Foundry Toolbox over MCP** (see §8 above), which replaces per-skill `mcp.json` files with one bundled MCP endpoint (`Charter-Agent-Tools`) consumed via the `McpBridge`.
+
+---
 ## Recommended reading order
 
 If the implementing team is new to this stack:
@@ -225,9 +248,10 @@ If the implementing team is new to this stack:
 2. **Ankit Bhargava part 1** — practitioner's view, especially the protocol choice.
 3. **Quickstart** — actually deploy a trivial hosted agent end-to-end. Half a day, no more.
 4. **Ankit Bhargava part 2** — once something's deployed, this makes the isolation-keys story land properly.
-5. **Agent Framework hosting integration** — once writing real agent logic.
-6. **Work IQ MCP overview** plus verification that the tenant's existing portal agents can call WorkIQ — confirm dependencies are sorted before going further.
-7. **Connect agents to MCP servers** + **Create and use a Foundry Toolbox** (section 8 above) — read these before wiring WorkIQ into the agent, since the chosen integration pattern is one Foundry Toolbox endpoint that bundles all WorkIQ MCP servers, not direct per-server MCP connections.
-8. **Agent Framework + GitHub Copilot integration** — background reading only. We intentionally do **not** use the Agent Framework wrapper around Copilot SDK; see [AGENTS.md §3 invariant 11](../AGENTS.md) for why.
+5. **agentskills.io specification (§10 above)** — read this before writing or reviewing any `SKILL.md`; it is invariant 1.
+6. **Agent Framework hosting integration** — once writing real agent logic.
+7. **Work IQ MCP overview** plus verification that the tenant's existing portal agents can call WorkIQ — confirm dependencies are sorted before going further.
+8. **Connect agents to MCP servers** + **Create and use a Foundry Toolbox** (section 8 above) — read these before wiring WorkIQ into the agent, since the chosen integration pattern is one Foundry Toolbox endpoint that bundles all WorkIQ MCP servers, not direct per-server MCP connections.
+9. **Agent Framework + GitHub Copilot integration** — background reading only. We intentionally do **not** use the Agent Framework wrapper around Copilot SDK; see [AGENTS.md §3 invariant 12](../AGENTS.md) for why.
 
 A small caveat: several of these sources are recent enough (particularly the May 2026 Foundry hosted agents refresh) that official Learn docs and practitioner blogs are still settling into agreement. Where they disagree, trust Microsoft Learn for capability claims and the practitioner blogs for usage patterns.
