@@ -1,0 +1,25 @@
+# Build outputs
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+dist/
+build/
+*.egg-info/
+
+# Envs
+.venv/
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# azd
+.azure/
+
+# Node (frontend, future phase)
+node_modules/

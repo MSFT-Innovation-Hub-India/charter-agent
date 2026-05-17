@@ -113,7 +113,7 @@ The target layout is defined in [`../AGENTS.md` §5](../AGENTS.md). This section
 | `consolidation/` | Loads the generated `consolidator.py`, runs it, surfaces findings. | `state`, generated module |
 | `state.py` | Atomic read/write of every `$HOME` file (Charter, state, activity NDJSON, MAF `AgentSession` thread). Returns Pydantic models. | (stdlib only) |
 | `workiq/` | Thin async wrappers around the Toolbox MCP tools. Two consumers: (a) MAF's native `MCPTool` (declared in `runtime/foundry_host.py`) for in-skill tool calls; (b) thin direct-call helpers for code paths that need raw tool output (kickoff fan-out, channel polling). Every wrapper obtains its token via `runtime.workiq_token.get_coordinator_token()` and **never** takes a visitor token. | `httpx`, `runtime.workiq_token`, `azure_identity` |
-| `observability.py` | `span(name, **attrs)` context manager that opens an OTel span *and* appends to `activity.json`. The Invocations protocol library and MAF already emit root + intermediate spans; this layer adds per-step children and the audit-log line. | `opentelemetry`, `state` |
+| `observability.py` | Re-exports `@trace_function` from `azure.ai.projects.telemetry` for custom spans, exposes `ProcessAttributesSpanProcessor` (stamps `project.id` / `gen_ai.conversation.id` on every span via `on_start`), and owns `log_activity(...)` for the `$HOME/activity.json` audit-log line. The Invocations protocol library and the Foundry `AIProjectInstrumentor` emit root + intermediate spans automatically; we do not hand-roll context managers or wire exporters. | `azure-ai-projects`, `opentelemetry`, `state` |
 
 The dependency direction is enforced in CI with `import-linter`. Cycles or upward imports fail the build.
 
@@ -136,9 +136,12 @@ Coordinator                  Frontend (BFF)        Foundry Agent           WorkI
      │                            │ (chat_iso=project_id, │                         │                        │
      │                            │  visitor bearer token)│                         │                        │
      │                            │ ─────────────────────►│                          │                        │
-     │                            │                      │ load similar prior       │                        │
-     │                            │                      │ artifacts (last month's  │                        │
-     │                            │                      │ board pack, runbook)     │                        │
+     │                            │                      │ ground prompt: workiq.ask│                        │
+     │                            │                      │ for open-ended discovery │                        │
+     │                            │                      │ (triggering email/mtg,   │                        │
+     │                            │                      │ similar prior artifact,  │                        │
+     │                            │                      │ runbook — any mix), then │                        │
+     │                            │                      │ drill in with typed tools│                        │
      │                            │                      │ ────────────────────────►│                        │
      │                            │                      │◄─────────────────────────│                        │
      │                            │                      │ draft Charter JSON       │                        │
@@ -553,10 +556,10 @@ Prompt templates are versioned alongside the code; changing a prompt is a code c
 
 ## 9. Observability & audit
 
-Two layers, always emitted together by the `observability.span(...)` context manager:
+Two layers, decoupled by ownership:
 
-1. **App Insights / OTel span** — for ops dashboards, error analysis, latency tracking.
-2. **`$HOME/activity.json` entry** — for the project's narrative audit trail, exportable to SharePoint at close.
+1. **App Insights / OTel spans** — owned by Foundry. Server-side (root invocation, model call, tool call) is auto-emitted by the platform once the project is connected to App Insights. Client-side (per skill / per workflow step) is auto-emitted by `AIProjectInstrumentor().instrument()` plus any function decorated with `@trace_function` (re-exported from `observability`). Process-wide attributes (`project.id`, `gen_ai.conversation.id`) are stamped by `ProcessAttributesSpanProcessor.on_start`, registered once at boot. No hand-rolled span context managers, no manual exporter wiring.
+2. **`$HOME/activity.json` entry** — owned by us, written via `observability.log_activity(...)`. This is the project's narrative audit trail, exportable to SharePoint at close. It is product behaviour, not telemetry, and is decoupled from the OTel pipeline.
 
 Standard span attributes for every span:
 
@@ -568,13 +571,12 @@ Standard span attributes for every span:
 | `charter.version` | from `charter.json` |
 | `verb` | the action being handled, if applicable |
 
-Recommended named spans (non-exhaustive):
+Recommended custom span names (non-exhaustive) — apply via `@trace_function("<name>")` on the relevant function; the root `/invocations` span and model/tool spans are emitted by the platform and the Foundry instrumentor and should not be re-created:
 
-- `invocation.handle` (root span per `/invocations`)
-- `charter.propose`, `charter.ratify`, `charter.amend`
+- `charter.invocation` (top dispatcher), `charter.propose`, `charter.ratify`, `charter.amend`
 - `kickoff.fanout`, `kickoff.create_templated_file`, `kickoff.post_teams`, `kickoff.send_email`, `kickoff.create_task`
-- `capture.poll_channel` (with attribute `channel.kind`)
-- `capture.classify` (with attribute `classification.label`, `classification.confidence`)
+- `capture.poll_channel` (function arg `channel_kind` shows up as `code.function.parameter.channel_kind`)
+- `capture.classify` (return value carries `classification.label` / `classification.confidence` as part of `code.function.return.value`)
 - `compliance.check_submission`
 - `action.draft`, `action.execute`, `action.dismiss`
 - `codegen.generate_module`
@@ -614,7 +616,7 @@ Lock these in `agent/pyproject.toml` once chosen; the table below is the intent.
 | Models | `pydantic` v2 | Charter, state, action, event |
 | Schema enforcement | `import-linter`, `ruff`, `pyright` | CI gate. Enforces that only `runtime/foundry_host.py` instantiates `ChatAgent`; only `runtime/copilot_codegen.py` instantiates `CopilotClient`; only `codegen/` imports `runtime/copilot_codegen`. |
 | Word/Excel handling | `python-docx`, `openpyxl` | Used inside the generated `consolidator.py`, pinned at the agent level so the codegen sub-agent cannot invent dependencies. |
-| Observability | `opentelemetry-api`, `opentelemetry-sdk`, `azure-monitor-opentelemetry-distro` | The Invocations protocol library and MAF wire the root + intermediate spans; `observability.py` adds children and the audit-log line. |
+| Observability | `azure-ai-projects>=2.0.0` (`AIProjectInstrumentor`, `@trace_function`), `azure-core-tracing-opentelemetry`, `azure-monitor-opentelemetry`, `opentelemetry-api`, `opentelemetry-sdk` | Foundry server-side traces are automatic once the project is connected to App Insights (preview for hosted agents). Client-side instrumentation is one call (`AIProjectInstrumentor().instrument()` + `AZURE_EXPERIMENTAL_ENABLE_GENAI_TRACING=true`); custom spans use `@trace_function`. The App Insights connection string is auto-injected — do not call `configure_azure_monitor` again. `observability.py` adds the audit-log line and the process-attribute `SpanProcessor`. |
 | Testing | `pytest`, `pytest-asyncio`, `respx` (HTTP mocks), `freezegun` | |
 
 Frontend BFF, in `frontend/backend/pyproject.toml`:

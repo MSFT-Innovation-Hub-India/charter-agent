@@ -1,0 +1,47 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: pyright
+      - run: pytest -q
+
+  frontend-bff:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff check app
+
+  skills-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Phase 1: no skills yet. The `skills-ref validate ./agent/skills/*` gate
+      # is required from Phase 2 onward (first real SKILL.md).
+      - run: |
+          if compgen -G "agent/skills/*/SKILL.md" > /dev/null; then
+            echo "TODO: install skills-ref and run: skills-ref validate ./agent/skills/*"
+            exit 0
+          fi
+          echo "no skills yet — skipping validation"

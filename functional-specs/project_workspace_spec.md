@@ -387,7 +387,7 @@ The kickoff flow:
 
 1. **Coordinator types a kickoff prompt** in natural language (or selects a template). E.g. `"Assemble the November board pack — same structure as last month."`
 
-2. **Agent grounds the prompt in prior context.** Calls WorkIQ to find the most similar prior artifact (last month's board pack) and any project runbook (`Board Pack Runbook.docx`). Reads them.
+2. **Agent grounds the prompt in whatever WorkIQ surfaces.** The grounding source is not fixed — it can be a recent email or meeting that triggered the kickoff ("I just got an email after a Teams sync about Project Lumen, start a charter from it"), a prior similar artifact that establishes the pattern ("same structure as last month's board pack"), an organisation runbook that supplies the rules (`Board Pack Runbook.docx`), or any combination. The skill calls `workiq.ask` first for open-ended discovery against the coordinator's M365 surface, then drills into specific files, messages, meetings, or tasks with the typed WorkIQ tools. If the prompt cites a specific source, the agent retrieves it directly; if it cites none, the agent surfaces the candidates it found and notes which ones it used (and which plausible alternatives it set aside) so the coordinator can redirect at ratification.
 
 3. **Agent proposes a Charter** populated from prior context. Surfaces it to the coordinator in a structured view: tasks, owners, deadlines, runbook requirements, consolidation rules.
 

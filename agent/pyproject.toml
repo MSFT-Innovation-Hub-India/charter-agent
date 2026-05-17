@@ -1,0 +1,78 @@
+[project]
+name = "charter-agent"
+version = "0.1.0"
+description = "Foundry hosted agent for cross-functional project coordination."
+requires-python = ">=3.12"
+dependencies = [
+  "azure-ai-agentserver-invocations",
+  # MAF: pin the specific sub-packages we actually use. The umbrella
+  # `agent-framework` meta-package pulls `agent-framework-core[all]`, which
+  # drags every provider (Anthropic, Bedrock, Mem0, Qdrant, Hyperlight,
+  # PowerFx, ChatKit, …) and sends pip into multi-hour backtracking.
+  # NOTE: `agent-framework-azure-ai` is broken on current PyPI — its 1.0.0rc5/6
+  # releases import symbols (`BaseContextProvider`, `agent_framework.azure._entra_id_authentication`)
+  # that don't exist in any released `agent-framework-core`. The shipped
+  # equivalent is `agent-framework-foundry` (FoundryChatClient, FoundryAgent).
+  "agent-framework-core",
+  "agent-framework-foundry",
+  "mcp",
+  "azure-ai-projects>=2.0.0",
+  "azure-identity",
+  "aiohttp",
+  "httpx",
+  "pydantic>=2",
+  "opentelemetry-api",
+  "opentelemetry-sdk",
+  "azure-core-tracing-opentelemetry",
+  "azure-monitor-opentelemetry",
+  "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff",
+  "pyright",
+  "pytest",
+  "pytest-asyncio",
+  "respx",
+  "freezegun",
+  "import-linter",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/charter_agent"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.importlinter]
+root_package = "charter_agent"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "foundry_host is the sole instantiator of MAF ChatAgent"
+type = "forbidden"
+source_modules = ["charter_agent"]
+forbidden_modules = ["agent_framework", "agent_framework_foundry"]
+ignore_imports = [
+  "charter_agent.runtime.foundry_host -> agent_framework",
+  "charter_agent.runtime.foundry_host -> agent_framework_foundry",
+]
+unmatched_ignore_imports_alerting = "none"
