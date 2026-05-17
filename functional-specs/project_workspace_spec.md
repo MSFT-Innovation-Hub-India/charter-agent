@@ -70,7 +70,7 @@ Browser  ──HTTPS──►  Azure Container App (or SWA)  ──Foundry API�
                     │                                                │
                     │  Entra SSO; reads /p/{project_id}              │  ┌──────────────────┐
                     │  from URL; passes as                           ──┤ Session sandbox  │
-                    │  x-ms-chat-isolation-key                         │ ($HOME persists, │
+                    │  x-agent-chat-isolation-key                      │ ($HOME persists, │
                                                                        │  Charter,        │
                                                                        │  state,          │
                                                                        │  Copilot-gen     │
@@ -92,7 +92,7 @@ Browser  ──HTTPS──►  Azure Container App (or SWA)  ──Foundry API�
 
 ### 3.2 Why each component, and what it does
 
-**Container App (or Static Web App) — generic frontend.** One deployment per tenant. Knows nothing about specific projects. Reads the project ID from the URL path (`/p/{project_id}`). Authenticates the visiting user via Entra SSO. Calls the Foundry agent's `/invocations` endpoint with the project ID as `x-ms-chat-isolation-key`. Renders whatever the agent returns. Scales horizontally like any stateless web app. Never instantiated per project.
+**Container App (or Static Web App) — generic frontend.** One deployment per tenant. Knows nothing about specific projects. Reads the project ID from the URL path (`/p/{project_id}`). Authenticates the visiting user via Entra SSO. Calls the Foundry agent's `/invocations` endpoint with the project ID as `x-agent-chat-isolation-key`. Renders whatever the agent returns. Scales horizontally like any stateless web app. Never instantiated per project.
 
 **Foundry hosted agent — the workspace's brain.** One deployed agent. Each project is a separate session in this agent, keyed by chat-isolation key (the project ID). State and per-project code live in `$HOME` of each session's microVM sandbox. Sessions persist up to 30 days with 15-minute idle timeout (compute deprovisions, $HOME state is preserved, resume is automatic on next request). The agent's code is project-shape-agnostic — it operates against a Project Charter (section 6).
 
@@ -128,7 +128,7 @@ Key properties to rely on:
 
 - **Per-session sandbox isolation.** Hypervisor-isolated microVM per session. Each session gets its own `$HOME` directory that persists across idle/resume cycles. No cross-session access.
 - **Session lifetime up to 30 days, 15-minute idle timeout.** Compute deprovisions on idle; state is preserved; resume is automatic on next request. Cold-start latency is acceptable for human-driven interaction (single-digit seconds).
-- **Isolation keys for multi-user access.** `x-ms-user-isolation-key` is set automatically from the caller's Entra token. `x-ms-chat-isolation-key` is set explicitly by the client to scope sessions to a logical conversation/workspace. Multiple users hitting the same chat-isolation-key see and modify the same session — this is the primitive that makes shared project workspaces possible.
+- **Isolation keys for multi-user access.** `x-agent-user-isolation-key` is set automatically from the caller's Entra token. `x-agent-chat-isolation-key` is set explicitly by the client to scope sessions to a logical conversation/workspace. Multiple users hitting the same chat-isolation-key see and modify the same session — this is the primitive that makes shared project workspaces possible.
 - **Two protocols available: Responses and Invocations.** Use **Invocations** for this system. Responses comes with platform-managed conversation history that we don't want (state lives in our Charter + state files in $HOME, not in chat history). Invocations gives us full control over the request/response shape and state management.
 - **OBO identity passthrough at the tool layer.** When the agent calls MCP tools that are configured with OAuth identity passthrough, Foundry exchanges the caller's token for a downstream token. This is what lets WorkIQ run in the visiting user's context.
 - **Agent identity and observability.** Each agent gets a dedicated Entra Agent ID. Application Insights connection string is injected automatically; OpenTelemetry tracing works out of the box. Use this for the audit log.
@@ -171,7 +171,7 @@ This is the canonical pattern Microsoft demonstrates in their official sample at
 ```python
 # main.py — the hosted agent
 from copilot_sdk import CopilotClient
-from azure_ai_agentserver_invocations import InvocationAgentServerHost
+from azure.ai.agentserver.invocations import InvocationAgentServerHost
 
 client = CopilotClient()
 await client.start()
@@ -247,7 +247,7 @@ Every project has one URL: `https://workspace.{your-domain}.com/p/{project_id}`.
 Anyone in the organisation with the URL and a valid Entra account can open it. On first load, the frontend:
 
 1. Authenticates the user via Entra SSO.
-2. Calls the Foundry agent's `/invocations` endpoint with the project ID as `x-ms-chat-isolation-key` and action `render_dashboard`.
+2. Calls the Foundry agent's `/invocations` endpoint with the project ID as `x-agent-chat-isolation-key` and action `render_dashboard`.
 3. The agent wakes up (or is already warm), runs a refresh cycle in the visiting user's OBO context (reading their visible signals via WorkIQ), updates the state file, returns the dashboard payload.
 4. The frontend renders.
 

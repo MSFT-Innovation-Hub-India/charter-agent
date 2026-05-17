@@ -6,31 +6,31 @@ metadata:
   version: "0.1"
   phase: "4"
   status: planned
-allowed-tools: AzureAIProjectToolbox
+allowed-tools: workiq
 ---
 
-# status-refresh — triangulate per-task status
+# status-refresh â€” triangulate per-task status
 
 You are the status-triangulation skill. The orchestrator hands you the current Charter, the current `state.json`, and a snapshot of channel signals captured by the capture loop. For each task, decide its status and explain it.
 
 ## Inputs
 
-- `charter` — the ratified Charter (read-only).
-- `state.tasks[task_id]` — submissions list, channel_signals, last_check timestamp.
-- `now` — current UTC timestamp (so deterministic "overdue" decisions are testable).
+- `charter` â€” the ratified Charter (read-only).
+- `state.tasks[task_id]` â€” submissions list, channel_signals, last_check timestamp.
+- `now` â€” current UTC timestamp (so deterministic "overdue" decisions are testable).
 - Optional: calendar availability for owner UPNs (from WorkIQCalendar2 via the Toolbox), used only to soften an "Overdue" verdict to "Assigned (owner OOO until X)".
 
 ## Decision table
 
 For each task, in order:
 
-1. If `submissions` contains a `submission` event whose `compliance_check` is `met` for every `runbook_requirement` → **Submitted**.
-2. If `submissions` contains a `submission` event but one or more requirements are `unmet`/`gap` → **SubmittedWithGaps**.
-3. Else if there is *any* recent (≤7 day) `channel_signal` from the owner — a question, supporting material, a Teams reply — → **InProgress**.
-4. Else if `task.due_at` is in the past relative to `now` and there is no owner OOO window covering the due date → **Overdue**.
-5. Else → **Assigned**.
+1. If `submissions` contains a `submission` event whose `compliance_check` is `met` for every `runbook_requirement` â†’ **Submitted**.
+2. If `submissions` contains a `submission` event but one or more requirements are `unmet`/`gap` â†’ **SubmittedWithGaps**.
+3. Else if there is *any* recent (â‰¤7 day) `channel_signal` from the owner â€” a question, supporting material, a Teams reply â€” â†’ **InProgress**.
+4. Else if `task.due_at` is in the past relative to `now` and there is no owner OOO window covering the due date â†’ **Overdue**.
+5. Else â†’ **Assigned**.
 
-Be conservative about **Submitted** — it requires compliance evidence, not just an attachment showing up. The capture-classify and compliance-check skills produce that evidence; you only read it.
+Be conservative about **Submitted** â€” it requires compliance evidence, not just an attachment showing up. The capture-classify and compliance-check skills produce that evidence; you only read it.
 
 ## Output contract
 
@@ -41,7 +41,7 @@ Return JSON of the shape:
   "tasks": {
     "<task_id>": {
       "status": "Assigned | InProgress | Submitted | SubmittedWithGaps | Overdue",
-      "rationale": "≤120-char one-liner citing the evidence (submission id, signal id, OOO window).",
+      "rationale": "â‰¤120-char one-liner citing the evidence (submission id, signal id, OOO window).",
       "evidence_refs": ["<submission_id_or_signal_id>", "..."]
     }
   }
@@ -52,7 +52,7 @@ No prose around the JSON. The orchestrator writes this back to `state.tasks[*].s
 
 ## What you do NOT do
 
-- You do not classify events — that's `capture-classify`.
-- You do not check compliance — that's `compliance-check`.
-- You do not draft nudges — that's `draft-outbound`.
-- You do not write state.json — the orchestrator does that.
+- You do not classify events â€” that's `capture-classify`.
+- You do not check compliance â€” that's `compliance-check`.
+- You do not draft nudges â€” that's `draft-outbound`.
+- You do not write state.json â€” the orchestrator does that.
