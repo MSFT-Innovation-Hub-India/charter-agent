@@ -1,25 +1,152 @@
-# Build outputs
-**/__pycache__/
-*.pyc
+# =====================================================================
+# Secrets / environment
+# =====================================================================
+# Real .env files are NEVER committed. Templates (.env.example,
+# .env.sample, .env.template) ARE committed — keep them up to date.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.pfx
+*.key
+*.p12
+*secrets*.json
+azure.auth.json
+
+# =====================================================================
+# Python
+# =====================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+pip-wheel-metadata/
+share/python-wheels/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Test / coverage / type-check caches
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .pyright/
-dist/
-build/
-*.egg-info/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
 
-# Envs
-.venv/
-.env
-.env.*
+# Import-linter
+.import_linter_cache/
 
-# IDE
-.vscode/
-.idea/
+# Notebooks
+.ipynb_checkpoints/
 
-# azd
-.azure/
-
-# Node (frontend, future phase)
+# =====================================================================
+# Node / frontend (Phase 5+)
+# =====================================================================
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+.yarn/cache/
+.yarn/install-state.gz
+
+# Build outputs (frontend)
+frontend/ui/dist/
+frontend/ui/build/
+.vite/
+.next/
+.nuxt/
+.parcel-cache/
+.svelte-kit/
+
+# =====================================================================
+# Azure / IaC
+# =====================================================================
+.azure/
+# Bicep: compiled ARM JSON
+infra/**/*.bicep.json
+# Terraform: state + local providers (lockfile IS committed)
+**/.terraform/
+**/terraform.tfstate
+**/terraform.tfstate.*
+**/.terraform.tfstate.lock.info
+**/crash.log
+**/*.tfvars
+!**/*.tfvars.example
+
+# =====================================================================
+# Local scratch / agent runtime ($HOME emulation for local smokes)
+# =====================================================================
+.smoke_home/
+**/.smoke_home/
+.local_home/
+**/.local_home/
+**/agent_session/
+**/activity.json
+**/state.json
+**/charter.json
+
+# Local install / pip logs
+install.log
+pip-log.txt
+pip-delete-this-directory.txt
+
+# =====================================================================
+# Logs
+# =====================================================================
+*.log
+logs/
+
+# =====================================================================
+# IDEs / editors
+# =====================================================================
+.idea/
+*.iml
+*.swp
+*.swo
+*.swn
+*~
+
+# VS Code: keep workspace shared settings (.vscode/settings.json, etc.)
+# Track .vscode/ explicitly — only ignore personal junk inside it.
+.vscode/*.log
+.vscode/chrome/
+.vscode/.history/
+
+# =====================================================================
+# OS
+# =====================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# =====================================================================
+# Docker (keep Dockerfile + compose; ignore local overrides)
+# =====================================================================
+docker-compose.override.yml
+.docker/

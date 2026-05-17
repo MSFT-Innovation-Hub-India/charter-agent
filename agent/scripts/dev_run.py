@@ -28,21 +28,11 @@ from collections import defaultdict
 from pathlib import Path
 
 
+from dotenv import load_dotenv
+
+
 def _load_env() -> None:
-    """Best-effort load of `agent/.env`. Optional — env may already be set."""
-    agent_dir = Path(__file__).resolve().parent.parent
-    env_path = agent_dir / ".env"
-    if not env_path.exists():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        k = k.strip()
-        v = v.strip().strip('"').strip("'")
-        if k and k not in os.environ:
-            os.environ[k] = v
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 
 def _ensure_src_on_path() -> None:

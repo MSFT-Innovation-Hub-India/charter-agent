@@ -52,12 +52,15 @@ def _enable_tracing() -> None:
 def _boot() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
-    # Local dev convenience: load agent/.env if present. In a hosted-agent
-    # container the platform supplies env directly; the file simply won't exist.
+    # Local dev convenience: load agent/.env (sibling of pyproject.toml) if
+    # present. In a hosted-agent container the file is absent and the platform
+    # supplies env directly. `override=False` — existing env wins.
     try:
+        from pathlib import Path
+
         from dotenv import load_dotenv
 
-        load_dotenv(override=False)
+        load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
     except ImportError:
         pass
 

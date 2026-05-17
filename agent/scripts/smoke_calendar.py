@@ -8,24 +8,10 @@ came back — final text plus any tool-call traces. Uses the live Toolbox via
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from pathlib import Path
 
-
-def _load_env() -> None:
-    env = Path(__file__).resolve().parent.parent / ".env"
-    if not env.exists():
-        return
-    for line in env.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        k = k.strip()
-        v = v.strip().strip('"').strip("'")
-        if k and k not in os.environ:
-            os.environ[k] = v
+from dotenv import load_dotenv
 
 
 def _ensure_src() -> None:
@@ -35,7 +21,7 @@ def _ensure_src() -> None:
 
 
 async def main() -> int:
-    _load_env()
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
     _ensure_src()
 
     from charter_agent.runtime import foundry_host
