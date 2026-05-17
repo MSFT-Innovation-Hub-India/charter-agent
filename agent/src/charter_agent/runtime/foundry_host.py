@@ -211,16 +211,16 @@ async def run_skill(
     if _chat_agent is None or _toolbox is None:
         raise RuntimeError("foundry_host.bootstrap() must be called first.")
 
-    from agent_framework import ChatAgent  # type: ignore[import-not-found]
+    from agent_framework import Agent  # type: ignore[import-not-found]
 
-    agent = ChatAgent(
-        chat_client=_chat_agent,
+    agent = Agent(
+        client=_chat_agent,
         instructions=skill_body,
         tools=[_toolbox],
     )
     kwargs: dict[str, Any] = {}
     if response_format is not None:
-        kwargs["response_format"] = response_format
+        kwargs["options"] = {"response_format": response_format}
     return await agent.run(user_prompt, **kwargs)
 
 
