@@ -67,7 +67,7 @@ root_package = "charter_agent"
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
-name = "foundry_host is the sole instantiator of MAF ChatAgent"
+name = "foundry_host is the sole instantiator of MAF Agent + FoundryChatClient"
 type = "forbidden"
 source_modules = ["charter_agent"]
 forbidden_modules = ["agent_framework", "agent_framework_foundry"]
