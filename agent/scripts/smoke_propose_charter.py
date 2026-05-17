@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -28,6 +29,18 @@ def _ensure_src() -> None:
     src = Path(__file__).resolve().parent.parent / "src"
     if str(src) not in sys.path:
         sys.path.insert(0, str(src))
+
+
+def _isolate_home() -> Path:
+    """Redirect $HOME to a per-script sandbox under `agent/.smoke_home/` so
+    smoke runs don't write `charter.json`/`state.json`/`activity.json` into the
+    real Windows user home, and don't cross-contaminate each other.
+    Must run BEFORE any import that calls `state.home_dir()`.
+    """
+    sandbox = Path(__file__).resolve().parent.parent / ".smoke_home" / Path(__file__).stem
+    sandbox.mkdir(parents=True, exist_ok=True)
+    os.environ["HOME"] = str(sandbox)
+    return sandbox
 
 
 PROMPT = (
@@ -44,6 +57,8 @@ PROMPT = (
 
 async def main() -> int:
     load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+    sandbox = _isolate_home()
+    print(f">>> sandboxed $HOME: {sandbox}")
     _ensure_src()
 
     from charter_agent import orchestrator

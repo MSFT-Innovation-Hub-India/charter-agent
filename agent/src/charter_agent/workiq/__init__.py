@@ -122,7 +122,13 @@ async def _call(operation: str, candidates: list[str], args: dict[str, Any]) -> 
 async def send_mail(
     *, to: list[str], subject: str, body: str, body_format: str = "html"
 ) -> Any:
-    """Send an email immediately (no draft step)."""
+    """Send an email immediately (no draft step).
+
+    The live `WorkIQMail2___SendEmailWithAttachments` tool exposes the body
+    format under `contentType` ("html" or "text"), not `body_format`. We keep
+    the wrapper's `body_format` kwarg for ergonomics and translate at the
+    boundary.
+    """
     return await _call(
         "send_mail",
         ["WorkIQMail2___SendEmailWithAttachments"],
@@ -130,7 +136,7 @@ async def send_mail(
             "to": to,
             "subject": subject,
             "body": body,
-            "body_format": body_format,
+            "contentType": body_format,
         },
     )
 
