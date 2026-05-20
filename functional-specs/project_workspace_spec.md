@@ -1,6 +1,10 @@
 # Project Workspace — Implementation Specification
 
-> An agent-orchestrated project coordination workspace built on Microsoft Foundry hosted agents, WorkIQ, GHCP Copilot SDK, and Azure Container Apps. Generic enough to handle any cross-functional project; specific enough to feel bespoke per project.
+> An agent-orchestrated project coordination workspace built on Microsoft Foundry hosted agents, WorkIQ, and Azure Container Apps. Generic enough to handle any cross-functional project; specific enough to feel bespoke per project.
+
+> **Single-user mode (in force).** The dashboard has exactly one human user — the **SOW Owner** — who ratifies the Charter and drives the project from a chat-plus-widgets UI. The agent still fans out nudges, emails, Teams messages, and tasks to assignees on M365 (in the SOW Owner's OBO context), but assignees do **not** sign in to the dashboard. **There is no deputy fallback, no per-visitor OBO, no observer/owner/coordinator role distinction, and no multi-viewer dashboard.** Where passages below describe collaborator visits, observer roles, deputy fallback, per-visitor reduced enrichment, or role-based filtering, treat them as **superseded** — `AGENTS.md` invariant 3 and §11.7 are the current contract. The longer passages are kept here for context and for the day a multi-user mode is reintroduced (which would require an ADR).
+
+> **Single-runtime mode (in force).** Earlier drafts of this spec referenced a GHCP Copilot SDK "codegen sub-agent" that would generate a per-project `$HOME/code/consolidator.py` for the `consolidate` skill. **That path has been dropped.** There is exactly one runtime — a Microsoft Agent Framework `Agent` on a Foundry `gpt-5.x` deployment. The `consolidate` skill writes the final deliverable declaratively via WorkIQ Word/SharePoint tool calls; there is no generated Python, no `GITHUB_TOKEN`, no `runtime/copilot_codegen.py`, no `codegen/` module. Where passages below mention Copilot SDK, GHCP, Claude Opus, codegen sub-agent, `consolidator.py` generation, or a `consolidator_module_path` Charter field, treat them as **superseded** — `AGENTS.md` invariant 12 is the current contract.
 
 ---
 

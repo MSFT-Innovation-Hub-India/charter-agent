@@ -1,10 +1,14 @@
 # Architecture & Design — charter-agent
 
-> The implementation-level companion to [`../functional-specs/project_workspace_spec.md`](../functional-specs/project_workspace_spec.md). The requirement spec answers *what* and *why*. This document answers *how* — concrete components, contracts, sequences, schemas, and the seams where the host runtime, the codegen sub-agent, and the Toolbox plug into otherwise generic agent code.
+> The implementation-level companion to [`../functional-specs/project_workspace_spec.md`](../functional-specs/project_workspace_spec.md). The requirement spec answers *what* and *why*. This document answers *how* — concrete components, contracts, sequences, schemas, and the seams where the host runtime and the Toolbox plug into otherwise generic agent code.
 >
-> Read [`../AGENTS.md`](../AGENTS.md) first for the non-negotiable invariants this design has been shaped around — in particular invariant 12 (dual-runtime: MAF `Agent` host + Copilot SDK codegen sub-agent) and invariant 3 (WorkIQ runs in the coordinator's OBO context, with deputy fallback).
+> Read [`../AGENTS.md`](../AGENTS.md) first for the non-negotiable invariants this design has been shaped around — in particular invariant 12 (single host runtime: MAF `Agent` on Foundry `gpt-5.x`) and invariant 3 (WorkIQ runs in the SOW Owner's OBO context, single-user).
 
-**Status**: draft v0.2 — pre-implementation. Reflects the dual-runtime architecture decision. Expect revisions during Phase 1–3 (and the Phase 1.5 smoke gate) as the Foundry SDK behaviour gets pinned down against real responses.
+> **Single-user mode (in force).** The dashboard has exactly one human user — the **SOW Owner**. Passages below that mention coordinator/observer/owner role distinctions, deputy fallback, per-visitor OBO, or multi-viewer dashboards are **superseded** — `AGENTS.md` invariant 3 and §11.7 are the current contract.
+
+> **Single-runtime mode (in force).** Earlier drafts referenced a GHCP Copilot SDK "codegen sub-agent" that would generate a per-project `$HOME/code/consolidator.py`. **That path has been dropped (May 2026).** There is exactly one runtime — a MAF `Agent` on a Foundry `gpt-5.x` deployment. The `consolidate` skill emits the final deliverable declaratively via WorkIQ Word/SharePoint tool calls. Passages below that mention `runtime/copilot_codegen.py`, `codegen/`, `CopilotClient`, `GitHubCopilotAgent`, Claude Opus, `GITHUB_TOKEN`, a `consolidator_module_path` Charter field, dual-runtime boot, or a Phase 1.5 codegen smoke gate are **superseded** — `AGENTS.md` invariant 12 and §4.2 are the current contract.
+
+**Status**: draft v0.2 — pre-implementation. Single-host-runtime architecture. Expect revisions during Phase 1–3 as the Foundry SDK behaviour gets pinned down against real responses.
 
 ---
 

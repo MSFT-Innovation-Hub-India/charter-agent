@@ -17,12 +17,9 @@ Override only if the RFP's required SOW structure is different. Put the override
 
 ## Template
 
-`consolidation_rules.template_path` should point to either:
+If the customer's RFP mandates a specific SOW template ("respond using the attached template"), the `consolidate` skill should honour it — fetch the attachment, use its styles, headers, footers, section headings, and numbering. Otherwise build the Word document from scratch using a clean default layout (1" margins, single-column, Heading 1 per section, embedded TOC).
 
-- the customer-supplied SOW template, when the RFP mandates one ("respond using the attached template"), **or**
-- the firm's standard SOW template (discovered via WorkIQ Copilot search for "SOW template").
-
-If neither exists, the `consolidate` skill will warn at ratification rather than guess. Do **not** generate a Word document from scratch — SOW responses live or die on conformance to the customer's expected format.
+Do **not** pre-commit a template path at charter time and do **not** create any shared folder, OneDrive file, or SharePoint location for collaborators. Collaborators reply on whatever surface suits them (inline email, attached Word doc, OneDrive link, Teams reply); the SOW Owner's inbox + the project's Teams chat are the canonical capture surfaces (see `references/COMMUNICATION_MATRIX.md`).
 
 ## Cross-section reconciliation
 
@@ -39,7 +36,4 @@ Findings are surfaced to the SOW Owner in the dashboard. The Owner decides wheth
 - It does not silently fix numerical mismatches. Gaps are reported; never auto-corrected.
 - It does not infer missing sections. A missing section is a `gap` finding, not a generated placeholder.
 - It does not redact case-study customer names. NDA handling is the responsibility of the SOW Owner; the case-studies submission is consumed verbatim.
-
-## When deterministic code is genuinely needed
-
-Final-document stitching (preserving the customer template's styles, headers, footers, table-of-contents, numbering, and embedding the cross-section reconciliation results into a "Compliance" appendix) is the case where the `consolidate` skill delegates to a generated `$HOME/code/consolidator.py` (see [AGENTS.md §4](../../../AGENTS.md) on the codegen sub-agent). The skill itself orchestrates; the generated module does the byte-level Word work.
+- It does not pre-create shared folders, templates, or upload locations at kickoff time. The deliverable is assembled at consolidation time and either stored in the SOW Owner's OneDrive or emailed back to them for review — the SOW Owner decides where it ultimately lands.

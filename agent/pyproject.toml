@@ -18,6 +18,7 @@ dependencies = [
   "mcp",
   "azure-ai-projects>=2.0.0",
   "azure-identity",
+  "msal",
   "aiohttp",
   "httpx",
   "pydantic>=2",
