@@ -1,15 +1,25 @@
-"""Top-level invocation dispatcher: action verb → handler."""
+"""Top-level invocation dispatcher.
+
+Three verbs only:
+
+- `echo` — Phase 1 smoke. Returns a counter and the session id.
+- `list_tools` — enumerates the WorkIQ Toolbox catalog, the agent-side state
+  tools, and the loaded skills, for diagnostics.
+- `run_skill` — load the named skill and run one host-Agent turn with the
+  user's prompt. The skill body owns the workflow (what files to write,
+  which WorkIQ tools to call, in what order). This module does not parse or
+  validate the model's output — it returns the raw text.
+"""
 
 from __future__ import annotations
 
 import os
 from typing import Any
 
-from . import kickoff, state, workiq
-from .charter import ratify as ratify_charter
-from .charter.schemas import Charter
+from . import state, workiq
 from .observability import log_activity, trace_function
 from .runtime import foundry_host, skill_loader
+from .runtime import state_tools as _state_tools
 
 
 @trace_function("charter.invocation")
@@ -22,10 +32,8 @@ async def handle_invocation(
         return await _echo(payload, visitor_identity)
     if action == "list_tools":
         return await _list_tools()
-    if action == "propose_charter":
-        return await _propose_charter(payload, visitor_identity)
-    if action == "ratify_charter":
-        return await _ratify_charter(payload, visitor_identity)
+    if action == "run_skill":
+        return await _run_skill(payload, visitor_identity)
     return {"ok": False, "action": action, "error": f"unknown action: {action}"}
 
 
@@ -36,10 +44,9 @@ async def _echo(payload: dict[str, Any], visitor: dict[str, Any] | None) -> dict
     )
     thread = foundry_host.get_session(session_id)
     count = state.bump_counter()
-    home = state.home_dir()
 
     actor = (visitor or {}).get("upn", "unknown")
-    log_activity(home, actor=actor, kind="echo", summary=f"echo #{count}")
+    log_activity(state.home_dir(), actor=actor, kind="echo", summary=f"echo #{count}")
 
     return {
         "ok": True,
@@ -55,42 +62,66 @@ async def _echo(payload: dict[str, Any], visitor: dict[str, Any] | None) -> dict
 
 @trace_function("charter.list_tools")
 async def _list_tools() -> dict[str, Any]:
-    """Phase 1 smoke: enumerate the WorkIQ tools the Toolbox exposes."""
     tools = await workiq.list_available_tools()
     return {
         "ok": True,
         "action": "list_tools",
         "result": {
-            "expected_servers": list(workiq.WORKIQ_SERVERS),
-            "tool_count": len(tools),
-            "tools": tools,
+            "expected_workiq_servers": list(workiq.WORKIQ_SERVERS),
+            "workiq_tool_count": len(tools),
+            "workiq_tools": tools,
+            "agent_side_tools": _state_tools.describe_tools(),
+            "loaded_skills": [
+                {"name": s.name, "description": s.description}
+                for s in skill_loader.load_all()
+            ],
         },
     }
 
 
-@trace_function("charter.propose_charter")
-async def _propose_charter(
+@trace_function("charter.run_skill")
+async def _run_skill(
     payload: dict[str, Any], visitor: dict[str, Any] | None
 ) -> dict[str, Any]:
+    skill_name = payload.get("skill_name")
     prompt = payload.get("prompt")
+    if not isinstance(skill_name, str) or not skill_name.strip():
+        return {
+            "ok": False,
+            "action": "run_skill",
+            "error": "payload.skill_name (non-empty string) is required.",
+        }
     if not isinstance(prompt, str) or not prompt.strip():
         return {
             "ok": False,
-            "action": "propose_charter",
+            "action": "run_skill",
             "error": "payload.prompt (non-empty string) is required.",
         }
 
-    skill = skill_loader.get("project-kickoff")
-    session_id = os.environ.get("FOUNDRY_AGENT_SESSION_ID", "local")
+    try:
+        skill = skill_loader.get(skill_name.strip())
+    except KeyError as e:
+        return {"ok": False, "action": "run_skill", "error": str(e)}
 
-    # Stamp the coordinator's UPN into the user prompt so the skill can place
-    # it into stakeholders.coordinator without guessing. visitor_identity is
-    # populated by the BFF from the MSAL token claims.
-    coordinator_upn = (visitor or {}).get("upn", "unknown@unknown")
+    session_id = (visitor or {}).get("session_id") or os.environ.get(
+        "FOUNDRY_AGENT_SESSION_ID", "local"
+    )
+    actor = (visitor or {}).get("upn", "unknown")
+
     framed_prompt = (
-        f"[coordinator_upn: {coordinator_upn}]\n"
-        f"[project_id_hint: {session_id}]\n\n"
+        f"[invocation_context]\n"
+        f"caller_upn: {actor}\n"
+        f"session_id: {session_id}\n"
+        f"[/invocation_context]\n\n"
         f"{prompt.strip()}"
+    )
+
+    log_activity(
+        state.home_dir(),
+        actor=actor,
+        kind="run_skill_start",
+        summary=f"started skill {skill.name!r}",
+        ref=skill.name,
     )
 
     run_result = await foundry_host.run_skill(
@@ -99,116 +130,43 @@ async def _propose_charter(
         session_id=session_id,
     )
 
-    proposed = _extract_charter(run_result)
-
-    home = state.home_dir()
-    log_activity(
-        home,
-        actor=coordinator_upn,
-        kind="propose_charter",
-        summary=f"proposed Charter for {proposed.project_id!r} (v{proposed.version})",
-        ref=proposed.project_id,
-    )
-
-    return {
-        "ok": True,
-        "action": "propose_charter",
-        "result": {
-            "proposed_charter": proposed.model_dump(mode="json"),
-        },
-    }
-
-
-@trace_function("charter.ratify_charter")
-async def _ratify_charter(
-    payload: dict[str, Any], visitor: dict[str, Any] | None
-) -> dict[str, Any]:
-    raw = payload.get("charter")
-    if not isinstance(raw, dict):
-        return {
-            "ok": False,
-            "action": "ratify_charter",
-            "error": "payload.charter (Charter JSON object) is required.",
-        }
-
-    try:
-        proposed = Charter.model_validate(raw)
-    except Exception as e:
-        return {
-            "ok": False,
-            "action": "ratify_charter",
-            "error": f"charter validation failed: {e}",
-        }
-
-    coordinator_upn = (visitor or {}).get("upn", proposed.stakeholders.coordinator)
-
-    try:
-        ratified = ratify_charter(proposed, by_upn=coordinator_upn)
-    except ValueError as e:
-        return {"ok": False, "action": "ratify_charter", "error": str(e)}
+    response_text = _extract_text(run_result)
 
     log_activity(
         state.home_dir(),
-        actor=coordinator_upn,
-        kind="ratify_charter",
-        summary=f"ratified Charter for {ratified.project_id!r} (v{ratified.version})",
-        ref=ratified.project_id,
+        actor=actor,
+        kind="run_skill_end",
+        summary=f"completed skill {skill.name!r} ({len(response_text)} chars)",
+        ref=skill.name,
     )
-
-    fanout_summary = await kickoff.fanout(ratified, by_upn=coordinator_upn)
 
     return {
         "ok": True,
-        "action": "ratify_charter",
+        "action": "run_skill",
         "result": {
-            "charter": ratified.model_dump(mode="json"),
-            "fanout": fanout_summary,
+            "skill_name": skill.name,
+            "session_id": session_id,
+            "response_text": response_text,
         },
     }
 
 
-def _extract_charter(run_result: Any) -> Charter:
-    """Pull a Charter out of whatever shape MAF's `agent.run(...)` returned.
+def _extract_text(run_result: Any) -> str:
+    """Best-effort pluck of the assistant's text from a MAF `Agent.run` result.
 
-    We don't ask the model for strict structured output (the Charter schema's
-    open `dict[str, Any]` configs and optional fields don't fit OpenAI's strict
-    JSON-schema mode — it rejects them as `additionalProperties` violations).
-    Instead the skill body mandates "emit exactly one Charter JSON object" and
-    we validate the text response with Pydantic here. Markdown fences are
-    stripped because gpt-5.x sometimes wraps JSON in ```json ... ```.
+    The run-result shape varies slightly across `agent-framework` versions;
+    we probe the common attributes in order. Falls back to `str(...)` so the
+    caller always sees something rather than an empty payload.
     """
-    for attr in ("value", "parsed", "output_parsed"):
-        candidate = getattr(run_result, attr, None)
-        if isinstance(candidate, Charter):
-            return candidate
-        if isinstance(candidate, dict):
-            return Charter.model_validate(candidate)
-        if isinstance(candidate, str):
-            stripped = _strip_code_fence(candidate)
-            if stripped.startswith("{"):
-                return Charter.model_validate_json(stripped)
-
-    for attr in ("text", "content", "output_text"):
-        text = getattr(run_result, attr, None)
-        if isinstance(text, str):
-            stripped = _strip_code_fence(text)
-            if stripped.startswith("{"):
-                return Charter.model_validate_json(stripped)
-
-    raise RuntimeError(
-        "propose_charter: could not extract a Charter from the agent run result "
-        f"(type={type(run_result).__name__}, attrs={dir(run_result)[:20]}...)."
-    )
-
-
-def _strip_code_fence(s: str) -> str:
-    """Strip a leading ```json / ``` fence and the matching trailing ``` if present."""
-    t = s.strip()
-    if t.startswith("```"):
-        # Drop the opening fence line.
-        first_nl = t.find("\n")
-        if first_nl != -1:
-            t = t[first_nl + 1 :]
-        if t.rstrip().endswith("```"):
-            t = t.rstrip()[: -len("```")].rstrip()
-    return t.strip()
+    for attr in ("text", "output_text", "content"):
+        v = getattr(run_result, attr, None)
+        if isinstance(v, str) and v:
+            return v
+    messages = getattr(run_result, "messages", None)
+    if messages:
+        last = messages[-1]
+        for attr in ("text", "content"):
+            v = getattr(last, attr, None)
+            if isinstance(v, str) and v:
+                return v
+    return str(run_result)

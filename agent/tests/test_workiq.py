@@ -44,6 +44,13 @@ def test_workiq_servers_match_portal() -> None:
 async def test_list_tools_verb_returns_toolbox_catalog() -> None:
     r: dict[str, Any] = await orchestrator.handle_invocation("list_tools", {})
     assert r["ok"]
-    assert r["result"]["tool_count"] == 2
-    names = {t["name"] for t in r["result"]["tools"]}
+    result = r["result"]
+    assert result["workiq_tool_count"] == 2
+    names = {t["name"] for t in result["workiq_tools"]}
     assert names == {"WorkIQMail2___SearchMessages", "WorkIQTeams___SendMessageToChannel"}
+    # Agent-side state tools should also be advertised on this verb.
+    agent_side = {t["name"] for t in result["agent_side_tools"]}
+    assert "state_write_text" in agent_side
+    assert "log_workflow_step" in agent_side
+    # And the loaded skills set (sow-response should be present).
+    assert any(s["name"] == "sow-response" for s in result["loaded_skills"])

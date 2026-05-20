@@ -74,5 +74,9 @@ forbidden_modules = ["agent_framework", "agent_framework_foundry"]
 ignore_imports = [
   "charter_agent.runtime.foundry_host -> agent_framework",
   "charter_agent.runtime.foundry_host -> agent_framework_foundry",
+  # state_tools uses MAF's @tool decorator to declare agent-side function tools.
+  # It does NOT instantiate Agent/ChatClient/Toolbox; the contract's spirit
+  # (one owner of the host runtime) is preserved.
+  "charter_agent.runtime.state_tools -> agent_framework",
 ]
 unmatched_ignore_imports_alerting = "none"

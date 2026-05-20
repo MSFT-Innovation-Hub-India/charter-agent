@@ -1,0 +1,75 @@
+This is about agentic ai based automation in an Enterprise that provides services to their Customers in the ITES Vertical
+They get an ask from their Customers for a Statement of Work in response to the RFP they release
+This automation involves the agent interacting with other agents and humans to compile an SOW Document by identifying the collaborators and reaching out to them. Each of them contributes to different sections of the document, and the in turn provide their inputs in the form of an Excel document or a Word document
+
+The step that would be automated is where case studies and customer testimonials from past projects would be retrieved.
+The Agent uses WorkIQ to check for messages from the collaborators either on email, or teams messages when they share their inputs. the Documents they share could be over email. Since they are not in the same Microsoft Entra Tenant (for this demo), sharing the RFP document with them over teams is not possible.
+
+The Agent should have instructions to this effect, and should be aware that it can follow up over teams by sending a message to remind them, but when sharing the input documents, it must do so over email. It should log all this thought process into the execution log that is maintained in the session state of the Microsoft Foundry Hosted Agent
+
+This Agent would operate based on skills. 
+There will be multiple skills that this Agent will support, hence there has to be a front ending agent which considers the user input to it, load a particular skill and then go through the workflow process as document in it.
+
+Skill Name: There would be a skill for SOW creation Skill.(Provide a proper name to this skill). The skill would contain instructions on:
+
+## Skill Document Instructions:
+1) Skill Trigger: what is the trigger point for this Agent to start a new session for compilation of SOW Response? In this case, the user(SOW Owner) would go to the Agent, click on 'new' conversation, and in the input text box say, I have received an RFP from 'x' customer and I want to orchestrate the SOW preparation for it. The Microsoft Teams call with the internal stakeholders is available, the call happened today. Go and get the details from it and get started
+
+
+2) Action : The Agent makes a call to WorkIQ to retrieve the details of the Teams Call referred above, reason over it and perform the following steps
+
+2) a) Prepare several a Markdown document that contains the following, which will be called the Project charter document
+Stores this document on the Microsoft Foundry Hosted Agent micro VM's Project folder, under a path relative to home directory. This should contain the following:
+- Name of the Customer
+- Project name for which the SOW is sought to be created
+- brief description of the Project
+- list of collaborators based on the tasks called out in the Teams Meeting notes
+- Use Microsoft WorkIQ to get the email addresses of the participants from the Microsoft Team meeting notes that triggered this entire workflow
+- determine if the users are having the same domain name in the address. Like I said collaborators having an email external to the one from the user who triggers the Agent
+- In a table in the Markdown Document above, you need to capture the modes of communication that you would use to communicate with them.
+	For Communication:
+	- if domain of collaborators(from the Teams Meeting Notes) is external, then email would be the only option for collaboration
+	- when the domain is same, then both teams message, as well as email would be the options for collaboration
+	FOR Collaboration and sharing documents
+	- if domain of the other collaborators(from the Teams Meeting Notes) is external, then document sharing over email is the only option
+	- if the domain of the collaborators(from the Teams Meeting Notes) is the same as that as the SOW Owner, then OneDrive, Sharepoint, email, teams message are the available options.
+
+- In another table in the same markdown document, capture the following details based on the Team Meeting notes
+    - List of task ownerships / accountabilities agreed upon during the call e.g. below but not limited to the following mandatory line items:
+       - Creating the technical scope and solution outlining for the SOW by <collaborator name>
+       - Creating the Project Management Scope, accountabilities section for the SOW by <collaborator name>
+       - creating the commercial section for the SOW by <collaborator name>
+       - Capturing the case studies and customer testimonials section <Agent calling AI Search >  (meaning this would be a RAG call based on the requirements in the RFP and matching case studies and testimonials from past projects
+
+After this is done, the Agent should perform the next action, which is creating a log data structure in the project home directory with the task description, accountable collaborator name and a tentative date of completion. (assume 1 day as the default duration for each activity)
+After all the collaborators have performed their tasks, the Agent would verify that the documents received contain the information expected in the RFP, to be included in the SOW Response
+The last action in this collaboration task log is when the Agent collates all the information received and creates a Microsoft Word document that denotes the SOW response.
+
+The Agent would call WorkIQ to check if the collaborators have responded and shared the documents expected of them.
+if received, then it will update the logs to say 'Technical scope and solution outlining section' received from <collaborator name> on <datetime>
+also update the other log saying:
+- checked if 'Technical scope and solution outlining section' has been received from <collaborator name> on <datetime> and status <not received>
+- received the 'Technical scope and solution outlining section' from <collaborator name> on <datetime>
+- reviewed
+2) b) Store the meeting notes in the project home directory, so that the Agent can refer to it whenever required during the whole workflow process
+update the project log saying the meeting notes accessed and downloaded for use
+
+
+2) c) Create a project execution log (structured data that the Agent can load directly rather than interpret using LLM to extract structured info every time), where you maintain the state of execution. When the user restarts a session, the agent would look at the execution log, and determine what are the steps under execution, or what the workflow process is waiting for, before progressing.
+
+It should for e.g. say:
+- SOW Owner initiated SOW response creation <datetime>
+- Teams Meeting Notes accessed and available <datetime>
+- RFP Document accessed and available <datetime>
+
+2) c) Look up the RFP that the user mentioned, calling WorkIQ, before you get started with the next steps. Store the content of the RFP document as a Markdown document in the project home folder. This will be used by the Agent during the course of the workflow process
+Update the Log saying RFP Document accessed and downloaded to Project Home directory
+
+2) How to collaborate:
+When the user selects an option to remind a collaborator about their document, it will choose the right surface to remind them (teams message, or email)
+it will then also log into the project log that <collaborator name> reminded about <artifact name> on <date time>
+
+
+When the SOW Owner selects a thread in the UI from the list of other threads, it will call foundry hosted agent service, bring up the hydrated session back to life, read the status of the logs, status of all the activities. the agent will then render the UI with a display of the current status, etc, display of the project execution logs. the UI will also show the list of artefacts or actions that are being waited upon. if it is about an artifact, the SOW Owner in the UI can select that item in the UI and say - remind the user/collaborator now. this will then hand this off to the agent loop that selects the right medium from the project charter (teams message or email) and send the user a reminder about it
+
+

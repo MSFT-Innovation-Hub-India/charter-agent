@@ -201,39 +201,30 @@ async def run_skill(
     *,
     skill_body: str,
     user_prompt: str,
-    response_format: type | None = None,
     session_id: str | None = None,
 ) -> Any:
-    """Run a one-shot ChatAgent turn using `skill_body` as instructions and the
-    Toolbox attached as the tool surface.
+    """Run a one-shot host-Agent turn using `skill_body` as instructions, with
+    the Toolbox + agent-side state tools attached as the tool surface.
 
-    Returns the MAF run result. If `response_format` is a Pydantic model class,
-    MAF is asked to produce structured output conforming to it; the caller is
-    responsible for parsing `result` into that model (MAF surfaces vary slightly
-    across `agent-framework` versions).
-
-    NOTE: Passing a Pydantic class via `response_format` activates OpenAI strict
-    structured-output mode, which requires `additionalProperties: false` on every
-    object node AND every property in `required`. This is incompatible with our
-    Charter schema (open `dict[str, Any]` on `WatchChannel.config`, many optional
-    fields). For Charter-shaped artifacts, leave `response_format=None` and parse
-    the model's JSON output with `Model.model_validate_json()` instead; rely on
-    the SKILL.md output contract to constrain shape. See AGENTS.md §6.
+    The model decides when to read/write `$HOME` files and when to call
+    WorkIQ tools to drive the workflow described in the skill. This module
+    does not interpret the result — it just hands the run result back to the
+    caller, which is expected to surface `result.text` (or equivalent) to the
+    invocation envelope.
     """
     if _chat_agent is None or _toolbox is None:
         raise RuntimeError("foundry_host.bootstrap() must be called first.")
 
     from agent_framework import Agent  # type: ignore[import-not-found]
 
+    from .state_tools import STATE_TOOLS
+
     agent = Agent(
         client=_chat_agent,
         instructions=skill_body,
-        tools=[_toolbox],
+        tools=[_toolbox, *STATE_TOOLS],
     )
-    kwargs: dict[str, Any] = {}
-    if response_format is not None:
-        kwargs["options"] = {"response_format": response_format}
-    return await agent.run(user_prompt, **kwargs)
+    return await agent.run(user_prompt)
 
 
 async def call_toolbox_tool(tool_name: str, args: dict[str, Any]) -> Any:

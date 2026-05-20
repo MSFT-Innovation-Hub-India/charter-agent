@@ -1,7 +1,7 @@
-# Project Lumen — Customer Escalation Recovery Planning
+# Northwind Trading Corp — RFP Response Kick-off (SOW for Custom Logistics Platform)
 
 **Meeting date:** [Today's date]
-**Attendees:** Srikantan Sankaran, Arvind Raman, Vishakha Arbat
+**Attendees:** Sansri (sansri@microsoft.com), Srikanta Sankaran (srikantasan@onemtc.net), Kishore P (kishorep@onemtc.net)
 
 ---
 
@@ -9,52 +9,100 @@
 
 ## Meeting notes
 
-### Customer Escalation Recovery Planning — Project Lumen
+### Context — Northwind RFP
 
-Srikantan, Arvind, and Vishakha met to scope the recovery plan for the Project Lumen engagement, which moved to Red status last week following the customer's CIO escalation. The team agreed on the structure of a formal recovery proposal to be presented to the customer by end of next week, and aligned on ownership of the major workstreams.
+Sansri, Srikanta, and Kishore met to kick off the response to an RFP received from **Northwind Trading Corp** earlier this week. Northwind is asking for a Statement of Work (SOW) for a **custom logistics and order-tracking software platform** to replace their ageing in-house system, with implementation, integration with their existing ERP, UAT, deployment, and an initial twelve months of support and maintenance. The RFP attachment (`Northwind-RFP-LogisticsPlatform-v1.pdf`) was circulated by Northwind's procurement lead, **Eleanor Vance (eleanor.vance@northwindtrading.com)**, and a response is due in **ten business days**.
 
-- **Escalation Context and Customer Position:** Srikantan opened by summarising the customer's escalation note. Three concerns surfaced: a delayed integration milestone, recurring test environment instability, and an unresolved scope ambiguity around two change requests raised in the last six weeks. The customer's CIO has asked for a credible recovery commitment with specific dates and ownership; she has indicated openness to a renegotiated transition but not to extending the steady-state ramp.
-- **Recovery Proposal Structure:** The team agreed the recovery proposal will have four sections — Situation Summary, Root Cause Analysis, Recovery Plan (with options), and Commercial Implications. Each section needs to be substantive enough for the customer's CIO and her program director to review without follow-up calls.
-- **Internal vs External Framing:** Srikantan emphasised that the proposal will be reviewed internally first by the regional delivery head and the practice lead before going to the customer, and that the internal version may carry candour the external version cannot. The team will maintain a single working document and produce the external version at the end.
+Sansri is the SOW Owner. The internal review will be done by the regional delivery head and the practice lead before the SOW goes back to Eleanor. The team is treating this as a Tier-1 pursuit — the deal size is meaningful and the customer relationship is new.
+
+- **Customer Position:** Northwind has emphasised three things in the RFP — a fixed go-live target of **end of Q1 next year**, a strong preference for a **milestone-based commercial model**, and a hard requirement that the platform integrate cleanly with their existing **SAP S/4HANA** ERP and their carrier-facing EDI gateway. Eleanor has indicated that two other vendors are also responding; price alone will not win it, but a clearly substantiated plan and credible case studies will.
+- **SOW Structure Agreed:** The team agreed the SOW response will be assembled in **four sections**, matching the structure Northwind asked for in their RFP — Technical Scope, Project Management & Delivery Approach, Commercial Terms, and Relevant Case Studies & Credentials. Each section needs to be detailed enough that Northwind's evaluation committee can score it without follow-up clarifications.
+- **Internal vs External Framing:** Sansri reminded the team that the internal working draft can carry more candour on risks and assumptions than the version Northwind sees. The team will maintain a single working document and produce the customer-facing version at the end.
 
 ### Workstream Assignments
 
-The major workstreams were assigned with target dates ahead of next Thursday's customer meeting.
+The four SOW sections were assigned with target dates ahead of the internal review on **Day 8** and the customer submission on **Day 10**.
 
-- **Root Cause Analysis (Arvind):** Arvind agreed to lead the technical root cause analysis, pulling together the integration architecture decisions, the test environment timeline, and the design review history. He will surface specifically whether the architect rotation three weeks ago is implicated in the integration delay, and will draft this as a Word document by Tuesday EOD.
-- **Recovery Plan with Scenarios (Vishakha):** Vishakha will own the recovery plan section, modelling three scenarios — minimal (integration fix only), moderate (integration plus test environment plus delivery manager injection), and aggressive (all of the above plus scope renegotiation on the two open change requests). She will produce this as an Excel with scenario-by-scenario costs, durations, and customer-acceptance probabilities, by Wednesday EOD.
-- **Commercial Implications and Cover (Srikantan):** Srikantan will draft the Situation Summary and the Commercial Implications sections himself, and will own the final assembled proposal. He will run the cross-section reconciliation between Arvind's RCA findings and Vishakha's scenario modelling, particularly around whether the recovery dates in the scenarios line up with the dependencies surfaced in the RCA.
+- **Technical Scope (Srikanta):** Srikanta will own the Technical Scope section — solution architecture, the proposed tech stack, the SAP S/4HANA integration approach, the EDI gateway integration, data migration from Northwind's legacy system, the test strategy, and the deployment / cutover plan. He will draft this as a Word document by **Day 5 EOD**. He flagged that the EDI gateway specifics in the RFP are thin and that he will raise a clarification question to Eleanor in the next two days.
+- **Project Management & Delivery (Kishore):** Kishore will own the PM & Delivery section — the proposed delivery methodology (hybrid Agile with milestone gates), the team structure and role mix, the governance cadence, the risk and issue management approach, the change-control process, and the assumptions and dependencies on Northwind. He will produce this as a Word document by **Day 5 EOD**.
+- **Commercial Terms (Sansri):** Sansri will draft the Commercial Terms section — the milestone-based payment schedule aligned with the RFP's go-live target, the rate card for time-and-materials work beyond scope, the assumptions underpinning the pricing, and the support-and-maintenance pricing for the first twelve months. He will produce this as an Excel pricing model plus a Word narrative, by **Day 6 EOD**.
+- **Case Studies & Credentials (Kishore, with Sansri):** Kishore will pull together three relevant case studies from the practice's reference library — ideally two logistics-domain engagements and one SAP-integration engagement — anonymised where required. Sansri will review and select the final two that go into the SOW. Target **Day 6 EOD**.
+- **Assembled Draft & Reconciliation (Sansri):** Sansri will own the final assembled SOW. He will run the cross-section reconciliation — that the timeline in the PM section matches the milestones in the Commercial section, that the team mix in the PM section matches the effort assumed in the Commercial pricing, and that the integration scope in the Technical section is consistent with the assumptions called out in the PM section. Assembled draft for internal review by **Day 7 EOD**.
 
 ### Discussion of Customer-Facing Sensitivities
 
-The team discussed what to include and what to hold back in the version that goes to the customer.
+The team discussed what to lean into and what to be careful with in the version that goes to Northwind.
 
-- **Architect Rotation Disclosure:** Arvind raised the question of whether to acknowledge the architect rotation as a contributing factor. Srikantan's view is that it should be acknowledged factually without dwelling on it, and that the recovery plan should explicitly include backfill commitments. Vishakha agreed and noted this needs reflection in the scenario assumptions.
-- **Test Environment History:** Vishakha cautioned that the test environment instability has a longer history than the current engagement, dating back to platform-level issues that pre-existed the project. The team agreed to flag this as a shared accountability item in the RCA but not to use it defensively.
+- **EDI Gateway Uncertainty:** Srikanta noted that the RFP is light on the EDI gateway specifics and that the technical assumptions will need to be explicit. The team agreed to call these out clearly in the Technical Scope's "Assumptions" subsection rather than hide them in the commercial fine print.
+- **Fixed Go-Live Date:** Kishore raised that the end-of-Q1 go-live target is aggressive given the integration surface area. The team agreed the PM section should propose the date but make the dependencies on Northwind (timely SAP access, UAT user availability, data migration sign-off windows) very explicit, so that any slippage attributable to Northwind is clearly traceable.
+- **Pricing Posture:** Sansri said the commercial posture should be a competitive but defensible milestone-based price, with the support-and-maintenance year priced separately so Northwind can opt in or out without re-opening the build pricing. Both Srikanta and Kishore agreed.
 
-### Internal Review and Customer Meeting
+### Internal Review and Customer Submission
 
-The team agreed on the review cadence ahead of the customer presentation.
+The team agreed on the review cadence ahead of the customer submission.
 
-- **Internal Review:** Wednesday afternoon, after Vishakha's scenario modelling is in. Srikantan will share the assembled draft with the regional delivery head and the practice lead. Any feedback gets incorporated Thursday morning.
-- **Customer Meeting:** Thursday 4pm, with the customer's CIO and her program director. Srikantan will lead the walkthrough; Arvind and Vishakha will join to handle technical and commercial questions respectively.
+- **Internal Review:** **Day 8** morning, with the regional delivery head and the practice lead. Sansri will share the assembled draft the previous evening. Any feedback gets incorporated on Day 8 afternoon and Day 9.
+- **Final QA Pass:** **Day 9** afternoon — Sansri runs a final consistency and tone pass on the customer-facing version.
+- **Customer Submission:** **Day 10** before 5pm IST. Sansri will send the final SOW PDF to Eleanor with Srikanta and Kishore on copy.
 
 ---
 
 ## Follow-up tasks
 
-**Root Cause Analysis Document:**
-Draft the technical RCA as a Word document, covering the integration milestone delay, the test environment timeline, and the architect rotation context. Due Tuesday EOD.
-*(Arvind Raman — Arvind.Raman@microsoft.com)*
+**Technical Scope Section:**
+Draft the Technical Scope of the SOW — architecture, tech stack, SAP S/4HANA integration, EDI gateway integration, data migration, test strategy, deployment plan. Raise EDI clarification questions to Eleanor in parallel. Due Day 5 EOD.
+*(Srikanta Sankaran — srikantasan@onemtc.net)*
 
-**Recovery Plan Scenarios Excel:**
-Build the three-scenario recovery model with costs, durations, and acceptance probability per scenario, with assumptions clearly stated. Due Wednesday EOD.
-*(Vishakha Arbat — viarbat@microsoft.com)*
+**Project Management & Delivery Section:**
+Draft the PM & Delivery section — methodology, team structure, governance, risk/issue management, change control, assumptions, customer dependencies. Due Day 5 EOD.
+*(Kishore P — kishorep@onemtc.net)*
 
-**Situation Summary and Commercial Implications Sections:**
-Draft the opening Situation Summary and the closing Commercial Implications sections of the recovery proposal. Due Wednesday EOD.
-*(Srikantan Sankaran — srikantan.sankaran@microsoft.com)*
+**Case Studies & Credentials Section:**
+Shortlist three relevant case studies from the practice reference library (two logistics, one SAP integration), anonymise where required, draft the credentials narrative. Due Day 6 EOD.
+*(Kishore P — kishorep@onemtc.net)*
 
-**Assembled Draft for Internal Review:**
-Consolidate all four sections into a single working document, run reconciliation between the RCA and the scenarios, and share with the regional delivery head and the practice lead. Due Wednesday late evening.
-*(Srikantan Sankaran — srikantan.sankaran@microsoft.com)*
+**Commercial Terms Section:**
+Draft the milestone-based payment schedule, T&M rate card, pricing assumptions, and twelve-month support-and-maintenance pricing. Produce as an Excel pricing model plus a Word narrative. Due Day 6 EOD.
+*(Sansri — sansri@microsoft.com)*
+
+**Assembled SOW Draft for Internal Review:**
+Consolidate all four sections into the working SOW document, run cross-section reconciliation (timeline vs milestones, team mix vs pricing, technical scope vs PM assumptions), share with the regional delivery head and the practice lead. Due Day 7 EOD.
+*(Sansri — sansri@microsoft.com)*
+
+**Final Submission to Northwind:**
+Run final QA pass, generate customer-facing PDF, send to Eleanor Vance (eleanor.vance@northwindtrading.com) with Srikanta and Kishore on copy. Due Day 10 before 5pm IST.
+*(Sansri — sansri@microsoft.com)*
+
+---
+
+## Attachment — Northwind RFP (excerpt circulated with the meeting invite)
+
+> **Request for Proposal — Custom Logistics & Order-Tracking Platform**
+> **Issued by:** Northwind Trading Corp
+> **RFP reference:** NWT-RFP-2026-LOG-014
+> **Response due:** Ten business days from issue date
+>
+> **1. Introduction.** Northwind Trading Corp ("Client") is seeking software services from a qualified vendor ("Vendor") to design, build, deploy, and support a custom Logistics & Order-Tracking Platform that will replace the Client's existing in-house system. Vendors are requested to respond with a Statement of Work covering the scope, deliverables, timeline, roles, commercials, and relevant credentials.
+>
+> **2. Objectives.**
+> - Deliver a custom platform that meets the functional and non-functional requirements detailed in Annexure A.
+> - Integrate the platform with the Client's SAP S/4HANA ERP and the Client's carrier-facing EDI gateway.
+> - Migrate operational data from the legacy system with zero data loss and documented reconciliation.
+> - Provide twelve (12) months of post go-live support and maintenance, priced separately.
+>
+> **3. Scope of Work (summary — see Annexure A for detail).**
+> - 3.1 Software Development — requirements elaboration, design, build, test, documentation, training material.
+> - 3.2 Implementation & Deployment — cutover plan, UAT, training, integration with existing infrastructure.
+> - 3.3 Support & Maintenance — issue resolution SLAs, patch cadence, periodic audits, dedicated helpdesk, knowledge transfer.
+>
+> **4. Indicative Timeline.** Go-live target: end of Q1 of the following calendar year. Vendors should propose a milestone plan consistent with this target and call out any dependencies on the Client.
+>
+> **5. Roles & Responsibilities.** Vendors should propose a delivery team structure, governance cadence, and explicit Client-side responsibilities (system access, UAT participation, sign-off windows).
+>
+> **6. Commercial Model.** Milestone-based; Vendor to propose the milestone breakdown and payment percentages. Support and maintenance to be priced separately on an annual basis with an option to renew.
+>
+> **7. Evaluation Criteria.** Technical fit (35%), delivery approach and team (25%), commercials (25%), relevant case studies and credentials (15%).
+>
+> **8. Submission.** Single PDF response to procurement@northwindtrading.com, c.c. Eleanor Vance (eleanor.vance@northwindtrading.com). Clarification questions accepted until Day 5; responses circulated to all bidders.
+>
+> **— End of RFP excerpt —**
