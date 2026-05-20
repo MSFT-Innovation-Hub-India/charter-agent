@@ -16,3 +16,7 @@ A scenario spec is the human-readable "what & why" for one skill. It is paired o
 2. **The spec separates four concerns explicitly** — trigger, skill-layer (domain reasoning), agent-layer (already-generic plumbing it relies on), and the Charter shape this scenario produces. Don't mix them.
 3. **Reference the generic spec, don't duplicate it.** All the Charter/state/action lifecycle is in [`../project_workspace_spec.md`](../project_workspace_spec.md). A scenario spec only documents what's *different* or *specific* about that scenario.
 4. **One skill per scenario.** Sub-tasks (e.g. "compliance-check a received document") use the existing generic skills (`compliance-check`, `draft-outbound`, `consolidate`); they are not re-implemented per scenario.
+
+## `raw/` \u2014 original briefs, non-normative
+
+Untouched source material that fed a curated scenario spec (e.g. the original product brief, a transcript, a stakeholder note). Kept for traceability only. **Do not read these as design input** \u2014 the curated `*.md` next to this README is the contract; the raw file may contradict it and is by definition out of date.
