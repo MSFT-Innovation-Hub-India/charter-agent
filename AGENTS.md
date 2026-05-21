@@ -16,6 +16,32 @@ The **canonical scenarios** are listed in [functional-specs/project_workspace_sp
 
 ---
 
+## 1.5 Current implementation status (May 20, 2026)
+
+The MVP ships as a **one-skill-does-all** codebase, deliberately narrower than the rest of this contract. Read the rest of this document as the *design north star*; consult this section for what actually exists in the repo today.
+
+**What ships:**
+
+- **Three `/invocations` action verbs** (in [`orchestrator.py`](agent/src/charter_agent/orchestrator.py)): `echo`, `list_tools`, `run_skill`. Every product workflow goes through `run_skill`.
+- **One skill**: [`agent/skills/sow-response/SKILL.md`](agent/skills/sow-response/SKILL.md). End-to-end SOW-response workflow — first-run mode (§2–§7) and resume mode (§8–§9). Generic across customers/projects; per-engagement variety lives in the Charter it reasons against.
+- **Generic state tools** exposed to the host model via MAF `@tool` (in [`runtime/state_tools.py`](agent/src/charter_agent/runtime/state_tools.py)): `read_text` / `write_text` / `read_json` / `write_json` / `append_ndjson` / `file_exists` / `list_files`. The skill drives all `$HOME` I/O through these.
+- **State files** the `sow-response` skill writes/reads (none enforced by Pydantic — the skill body owns the shape): `project_charter.md` (charter is markdown, not JSON), `project_log.json` (tasks, submissions, cursors, status), `activity.json` (append-only NDJSON), `agent_session/<session-id>.json` (MAF thread).
+- **`runtime/foundry_host.py`** — MAF `Agent` + `MCPStreamableHTTPTool` against the `Charter-Agent-Tools` Foundry Toolbox v1 (135 tools across 8 WorkIQ servers). Toolbox bearer is currently `DefaultAzureCredential` → `https://ai.azure.com/.default` (Foundry MI in prod; dev `az login` identity locally — incidentally SOW-Owner-equivalent).
+- **`runtime/workiq_token.py`** (landed May 20, 2026) — SOW-Owner delegated WorkIQ token provider (MSAL silent acquire against an on-disk cache seeded out-of-band). **Not yet wired** into the Toolbox auth hook; that's a follow-on change once a bootstrap script lands.
+
+**What the rest of this contract describes that does *not* exist yet:**
+
+- The per-domain modules `charter/`, `kickoff/`, `capture/handlers/*`, `status/`, `actions/`, `consolidation/`.
+- The eight-skill split (`project-kickoff`, `status-refresh`, `capture-classify`, `compliance-check`, `draft-outbound`, `consolidate`, `amend-charter`, `render-dashboard`).
+- The nine-verb invocation contract (`propose_charter`, `ratify_charter`, `render_dashboard`, `execute_suggested`, `dismiss_suggested`, `amend_charter`, `override_capture`, `coordinator_chat`, `close_project`).
+- The frontend BFF + SPA. The `frontend/backend/` directory exists with a stub but no real BFF, and `frontend/ui/` is empty.
+- Pydantic schema models (`charter/schemas.py`). State shape is owned by the skill body today.
+- The `workiq/` package is a placeholder; skills call WorkIQ tools directly through the Toolbox.
+
+The detailed module/skill/verb layouts in §5, §11.2, §11.3, §11.4, and §11.10 describe a *possible evolution* if specific concerns prove to need bit-exact Python per the [§4.4](#44-core-code-vs-skill--the-decision-rule) decision rule. **Do not assume any of that machinery exists when writing a change.** When in doubt, check `agent/src/charter_agent/` and `agent/skills/`.
+
+---
+
 ## 2. Read these before touching code
 
 In this order, every time you start a non-trivial change:
@@ -34,15 +60,15 @@ If your change contradicts any of these, **update the spec first** (in the same 
 These exist because violating them breaks the system's identity, security, or scaling model. Do not work around them. If you think you have a case for breaking one, raise it explicitly — don't slip it in.
 
 1. **Skills-first, conformant to the open [agentskills.io](https://agentskills.io/specification) spec.** This is the most load-bearing architectural choice in the system, above every other invariant on this list. Every reusable agent capability — classify, draft, validate, consolidate, propose, render — is packaged as an **Agent Skill**: a folder under `agent/skills/{name}/` containing a `SKILL.md` with valid YAML frontmatter (required `name` and `description`; optional `metadata`, `license`, `compatibility`, `allowed-tools`), plus optional `scripts/`, `references/`, `assets/` subdirs. Skills are progressively disclosed (name+description always loaded at boot, body on activation, supporting files on demand). A small in-repo loader (`runtime/skill_loader.py`, ~50 lines) reads every `agent/skills/*/SKILL.md`, validates the frontmatter, and injects the body into the MAF host `Agent`'s instructions / tool-selection surface at boot. Conformance to the open spec buys us portability (the same skill can be loaded by Claude Code, VS Code, Goose, Gemini CLI, Kiro, fast-agent, GitHub Copilot etc. for isolated authoring/testing), auditability (skills are versioned files reviewed in PRs), and a clean cut between *deterministic plumbing* (code) and *reasoning/generation/judgement* (skill). See [§4.3](#43-agent-skills-format-agentskillsio-conformance) for the format contract and [§4.4](#44-core-code-vs-skill--the-decision-rule) for the heuristic. Note: agentskills.io is a *format* spec, not a runtime or tool-discovery mechanism — Claude-Code-specific concepts like `plugins/` and `mcp.json` are **not** part of it and **not** used here; tool discovery for us is the Foundry Toolbox over MCP (see [§4.1](#41-foundry-toolbox-via-native-maf-mcpstreamablehttptool)).
-2. **Generic over specific (the corollary of invariant 1).** The agent's *code* is project-shape-agnostic. *All* per-project variety lives in (a) the **Project Charter** (`$HOME/charter.json` in the session sandbox) and (b) the **Agent Skills** under `agent/skills/` (auto-loaded by the host runtime; shape the agent's reasoning declaratively per workflow). Do not hard-code domain logic — board pack, audit, escalation, budget, etc. — anywhere in the agent itself. If a feature seems to need it, the answer is almost always "extend the Charter schema, or add or refine a skill."
+2. **Generic over specific (the corollary of invariant 1).** The agent's *code* is project-shape-agnostic. *All* per-project variety lives in (a) the **Project Charter** (`$HOME/project_charter.md` in the session sandbox — a Markdown document the skill emits at kickoff) and (b) the **Agent Skills** under `agent/skills/` (auto-loaded by the host runtime; shape the agent's reasoning declaratively per workflow). Do not hard-code domain logic — board pack, audit, escalation, budget, etc. — anywhere in the agent itself. If a feature seems to need it, the answer is almost always "extend the Charter, or add or refine a skill."
 3. **WorkIQ runs in the SOW Owner's OBO context.** The app is single-user: one person (the SOW Owner, who ratifies the Charter and uses the dashboard) is the only human in the loop. Every WorkIQ call — read or write, capture-time or send-time — is made in the SOW Owner's **delegated context**, never as the agent's managed identity. Application-only auth is not supported by WorkIQ ([spec §10.1](functional-specs/project_workspace_spec.md)). There is no deputy fallback, no per-visitor OBO, no multi-viewer dashboard — if the SOW Owner's token is unavailable (PTO, revoked, Conditional Access block) the agent surfaces that as an exception and waits. This is what makes invariants 4 and 5 below tractable.
 4. **No background workers, no cron, no schedulers.** The agent only runs when a user hits `/invocations`. There is no autonomous wake-up loop. Anything that *feels* like it needs scheduling is wrong — re-think it as "runs on next visit."
 5. **Human-in-the-loop for every outbound action.** The agent drafts; the coordinator approves; the agent sends in the **coordinator's OBO context** (per invariant 3, not as a bot). There is no `auto_approve` mode. Do not add one.
-6. **State lives in `$HOME`, period.** No external database, queue, cache, or event bus. The Foundry per-session microVM `$HOME` (Charter, `state.json`, `activity.json`) is the entire project store. The frontend is a renderer; it holds no state.
-7. **Charter immutability outside the ratification flow.** Only the `kickoff` and `amend_charter` code paths may write `charter.json`. Both must run through coordinator ratification. Increment `version` on every amendment.
+6. **State lives in `$HOME`, period.** No external database, queue, cache, or event bus. The Foundry per-session microVM `$HOME` (today: `project_charter.md`, `project_log.json`, `activity.json`, `agent_session/<id>.json`) is the entire project store. The frontend is a renderer; it holds no state.
+7. **Charter immutability outside the ratification flow.** Only the kickoff and amendment code paths (today: the corresponding sections of `sow-response/SKILL.md`; planned: dedicated `kickoff` and `amend_charter` verbs) may write `project_charter.md`. Both must run through coordinator ratification. Track a Charter version (today: in `project_log.json`; future: as Pydantic field) and bump on every amendment.
 8. **Use Invocations, not Responses.** The Foundry protocol choice is Invocations (we manage history ourselves). Don't introduce Responses-protocol code.
-9. **Channel-watchers are a registry.** New `watch_channel.kind` values must plug into the registry described in [architecture §6.2](architecture/architecture_and_design.md). Never `if channel.kind == "...":` switches scattered in agent code.
-10. **Idempotency on every outbound side-effect.** Every suggested action has a UUID; `state.executed_action_ids` is the gate. A double-approve must not double-send.
+9. **Channel-watchers are a registry — *when* code-side channel handlers exist.** Today there is no `capture/handlers/*` registry — channel polling is owned by `sow-response/SKILL.md` §9, which drives it via the WorkIQ Mail/Teams tools through the Toolbox. The registry rule applies *if and when* channel-handling is lifted into Python: new `watch_channel.kind` values must plug into the registry described in [architecture §6.2](architecture/architecture_and_design.md). Never `if channel.kind == "...":` switches scattered in agent code.
+10. **Idempotency on every outbound side-effect.** Every suggested action must carry a UUID and a guard that prevents double-execution. Today the skill body owns the guard (deduping submissions by `internetMessageId` in `project_log.json`); the planned `actions/` module would carry a structured `state.executed_action_ids` set. A double-approve must not double-send.
 11. **No ports exposed from the sandbox.** The frontend Container App is the only public surface. The agent serves only `/invocations`.
 12. **Single runtime: MAF `Agent` on Foundry.** The agent has exactly one runtime: a Microsoft Agent Framework `Agent` (from `agent_framework`, *not* `ChatAgent`) on a Foundry `gpt-5.x` deployment, authenticated by Managed Identity, served by `azure-ai-agentserver-invocations`. It owns `/invocations`, the session lifecycle (1:1 to Foundry session via `FOUNDRY_AGENT_SESSION_ID`), the MAF `AgentSession` thread persisted in `$HOME`, skill loading, Toolbox MCP tool dispatch (raw `MCPStreamableHTTPTool`), and every reasoning verb — charter proposal, classification, drafting nudges, status triangulation, coordinator chat, consolidation. (Note: `agent-framework-core` 1.4.x exposes the host-agent class as `agent_framework.Agent` — `ChatAgent` does **not** exist at the package top level; constructor is `Agent(client=<FoundryChatClient>, instructions=..., *, tools=[...])`.)
 
@@ -82,7 +108,7 @@ What the runtime must do — treat each as a hard requirement, not a suggestion:
 - The Foundry Toolbox does **not** implement MCP `prompts/list`. Pass `load_prompts=False` when constructing `MCPStreamableHTTPTool` or `connect()` will fail with HTTP 400 inside MAF's load-prompts step.
 - Transitive deps not pulled by the MAF distros — declare them in `pyproject.toml`: `mcp` (used by `streamable_http_client`) and `aiohttp` (used by `azure-ai-projects` async pipeline).
 - The MCP `initialize` / `tools/list` / `tools/call` plumbing is owned by `MCPStreamableHTTPTool`; do not re-wire it.
-- `approval_mode="never_require"` for WorkIQ reads **and** writes. Approval is enforced at a higher layer (the `actions/` module's `SuggestedAction` lifecycle, gated by the coordinator in the dashboard) — see [references.md §8](functional-specs/references.md).
+- `approval_mode="never_require"` for WorkIQ reads **and** writes. Approval is enforced at a higher layer (today: by the skill body refusing to call write tools without an explicit user OK in the prompt; planned: a dedicated `actions/` module's `SuggestedAction` lifecycle, gated by the coordinator in the dashboard) — see [references.md §8](functional-specs/references.md).
 - Inject the **SOW Owner's** delegated WorkIQ token (per invariant 3) inside the auth hook — `runtime/workiq_token.py` is the sole owner of token acquisition and refresh. Visitor identity is **not** propagated to the Toolbox (the SOW Owner *is* the only visitor). In dev before `workiq_token.py` lands, `DefaultAzureCredential` naturally resolves to the SOW Owner's `az login` identity, so calls go in the right context; this is **not** a production posture.
 - Watch the 100-second non-streaming MCP call timeout in capture loops — fan out channel polls concurrently (`asyncio.gather`), not serially.
 
@@ -153,7 +179,7 @@ allowed-tools: ToolboxMcp(workiq_files_*) ToolboxMcp(workiq_ask)   # optional, e
 - Skill names use the kebab-case verbs we already have: `project-kickoff`, `status-refresh`, `capture-classify`, `compliance-check`, `draft-outbound`, `consolidate`, `amend-charter`, `render-dashboard`.
 - The `description` field is the *only* mechanism by which the orchestrator and the host runtime route work to a skill — invest time in it. Bad descriptions are the most common reason a skill is silently ignored at runtime.
 - File references in `SKILL.md` are relative paths from the skill root (`scripts/extract.py`, `references/RUNBOOK.md`). Keep references one level deep — no nested chains.
-- A skill is **never** project-specific. If a skill seems to need per-project text, the per-project text belongs in the Charter (`charter.json`) and the skill reads it from there.
+- A skill is **never** project-specific. If a skill seems to need per-project text, the per-project text belongs in the Charter (`project_charter.md`) and the skill reads it from there.
 - Skills are reviewed and shipped with the agent container image. There is no "hot-load a skill from $HOME" path, and no per-project generated code path either (see invariant 12).
 
 **Out of scope / explicit non-goals here:**
@@ -168,13 +194,12 @@ The single most common design question on this project will be "does this new fu
 | Concern | Put it in | Why |
 |---|---|---|
 | Deterministic plumbing — atomic file I/O, JSON serialisation, schema validation, HTTP/MCP transport, request dispatch, OBO header propagation | **Code** (`agent/src/charter_agent/…`) | Invariants must hold byte-for-byte; not negotiable by an LLM. |
-| State-of-the-world bookkeeping — `state.json` reads/writes, NDJSON append to `activity.json`, `executed_action_ids` gating, channel cursors | **Code** (`state.py`, `actions/`, `capture/handlers/*`) | Idempotency and audit integrity (invariants 10, 6) require strict, testable code. |
-| Boot-time policy — env-var assertions, warm `Agent` lifecycle, MAF `MCPStreamableHTTPTool` wiring, OTel wiring | **Code** (`runtime/foundry_host.py`, `__main__.py`) | One-shot startup contract; no language-model judgement involved. |
+| State-of-the-world bookkeeping — atomic `$HOME` reads/writes, NDJSON append to `activity.json`, channel cursors, idempotency-gate sets | **Code** (today: `state.py` low-level helpers + `runtime/state_tools.py` `@tool` wrappers driven by the skill; planned: `actions/` for the gating set and `capture/handlers/*` for cursor mechanics) | Idempotency and audit integrity (invariants 10, 6) require strict, testable code where the data crosses Python module boundaries; while everything is one skill, the skill body is responsible. || Boot-time policy — env-var assertions, warm `Agent` lifecycle, MAF `MCPStreamableHTTPTool` wiring, OTel wiring | **Code** (`runtime/foundry_host.py`, `__main__.py`) | One-shot startup contract; no language-model judgement involved. |
 | Verb dispatch — mapping `/invocations` action verbs to skill invocations + downstream effects | **Code** (`orchestrator.py`) | Dispatch is structural; the *reasoning* each verb triggers belongs in the skill it calls. |
-| Channel-handler poll mechanics — "since" cursors, dedup keys, author filters | **Code** (`capture/handlers/*`) | Cursor correctness is testable; getting it wrong loses or duplicates events. |
+| Channel-handler poll mechanics — "since" cursors, dedup keys, author filters | **Skill today** (`sow-response/SKILL.md` §9, via WorkIQ Mail/Teams tools); **code if/when extracted** (would live in `capture/handlers/*`) | Currently the skill body owns cursor advancement and dedup. Promote to code only if cursor correctness starts failing or a non-skill consumer needs the same mechanics. |
 | Classification, drafting, judgement, summarisation, gap detection, prompt-generation, document consolidation orchestration, coordinator conversation | **Skill** (`agent/skills/*/SKILL.md`) | These benefit from natural-language instructions, reference docs, and iteration without code review cycles; they are what LLMs do well. |
 | Per-workflow procedural knowledge ("how a kickoff is done," "what makes a board-pack section compliant," "how to phrase a nudge respectfully") | **Skill** (with supporting `references/*.md`) | Captured once, version-controlled, swappable per organisation by editing one file. |
-| Cross-section reconciliation and final-deliverable assembly | **Skill** (`consolidate`) | The skill instructs the host model to stitch sections together and emit the deliverable via WorkIQ Word/SharePoint tool calls. If a future scenario genuinely needs deterministic Python (e.g. strict numeric cross-section reconciliation against a template that the model can't get right on its own), promote the requirement to an ADR and weigh reintroducing a codegen path against shipping the reconciliation as a fixed in-repo module under `consolidation/`. |
+| Cross-section reconciliation and final-deliverable assembly | **Skill** (`sow-response` §5–§7 consolidation flow today; future dedicated `consolidate` skill if extracted) | The skill instructs the host model to stitch sections together and emit the deliverable via WorkIQ Word/SharePoint tool calls. If a future scenario genuinely needs deterministic Python (e.g. strict numeric cross-section reconciliation against a template the model can't get right on its own), promote the requirement to an ADR and ship the reconciliation as a fixed in-repo module under `consolidation/`. |
 
 **The acid test for any new feature:** if you can describe the behaviour fully in English to a colleague in under 200 words, it should be a skill. If you can't — because it has bit-exact invariants, performance constraints, or security gates — it's code. When in doubt, prefer the skill; you can always lift bits down into code later if they prove non-negotiable.
 **Skill prompts as the schema contract.** Whenever a skill emits a Pydantic-validated artifact (e.g. `propose_charter` returning a `Charter`), do **not** reach for OpenAI strict structured output (`response_format=<PydanticClass>` / `client.responses.parse`). Strict mode demands `additionalProperties: false` on every object node and every property in `required` — which is incompatible with our schemas (open `dict[str, Any]` configs, many optional fields). Instead: emit JSON via the skill body, strip ```json fences, validate with `Model.model_validate_json()`. The SKILL.md output contract then becomes the binding spec; enumerate explicitly (a) every `Literal[…]` enum's allowed values, (b) the expected key set for any `dict`/object field, (c) any `str` field a model might naturally emit as a structured value (say "plain string" with an example). The model honors precise wording; vague descriptions burn iterations chasing `ValidationError`s.
@@ -204,51 +229,38 @@ charter-agent/
 │   ├── Dockerfile
 │   ├── agent.yaml
 │   ├── pyproject.toml
-│   ├── skills/                        ← Agent Skills (agentskills.io spec); auto-loaded by the host runtime at process start
-│   │   ├── project-kickoff/
-│   │   │   ├── SKILL.md               ← required: YAML frontmatter + instructions
-│   │   │   ├── references/            ← optional: detail docs loaded on demand
-│   │   │   └── assets/                ← optional: templates / schemas
-│   │   ├── status-refresh/SKILL.md
-│   │   ├── capture-classify/
-│   │   │   ├── SKILL.md
-│   │   │   └── references/CLASSIFICATION_RUBRIC.md
-│   │   ├── compliance-check/
-│   │   │   ├── SKILL.md
-│   │   │   └── references/RUNBOOK_REQUIREMENTS.md
-│   │   ├── draft-outbound/SKILL.md
-│   │   ├── consolidate/
-│   │   │   ├── SKILL.md
-│   │   │   ├── scripts/               ← optional: helpers the skill may invoke
-│   │   │   └── references/CONSOLIDATION_RULES.md
-│   │   ├── amend-charter/SKILL.md
-│   │   └── render-dashboard/SKILL.md
+│   ├── scripts/                       ← dev helpers + live smokes (smoke_calendar, smoke_resume, dev_run)
+│   ├── skills/                        ← Agent Skills (agentskills.io spec); auto-loaded at process start
+│   │   └── sow-response/              ← THE skill (one-skill-does-all)
+│   │       ├── SKILL.md               ← workflow body: §1 mode-detect, §2–§7 first-run, §8 resume, §9 capture, §10 must-NOT
+│   │       └── references/            ← progressively-disclosed detail
+│   │           ├── SOW_SECTIONS.md
+│   │           ├── COMMUNICATION_MATRIX.md
+│   │           └── CLASSIFICATION_RUBRIC.md
 │   ├── src/charter_agent/
 │   │   ├── __main__.py                ← azure-ai-agentserver-invocations entry; boots the host runtime
 │   │   ├── runtime/
-│   │   │   ├── foundry_host.py        ← sole owner of MAF Agent + AgentSession; native MCPTool wiring
-│   │   │   ├── skill_loader.py        ← reads agent/skills/*/SKILL.md, injects into Agent
-│   │   │   └── workiq_token.py        ← SOW-Owner OBO acquisition + refresh (single-user; no deputy)
-│   │   ├── orchestrator.py            ← top-level invocation dispatcher (action verbs → Agent / skill calls)
-│   │   ├── charter/                   ← schema, validation, ratification, amendment
-│   │   ├── kickoff/                   ← fan-out actions (SharePoint, Teams, Outlook, email)
-│   │   ├── capture/                   ← watch-channel registry + handlers (skill-driven classifier)
-│   │   ├── status/                    ← triangulation logic (pure)
-│   │   ├── actions/                   ← suggested-action drafter + executor (with idempotency)
-│   │   ├── consolidation/             ← drives the `consolidate` skill, surfaces findings
-│   │   ├── state.py                   ← $HOME read/write helpers (MAF AgentSession persistence too)
-│   │   ├── workiq/                    ← thin wrappers around WorkIQ MCP tools (the MAF MCPTool side)
-│   │   └── observability.py           ← re-exports `@trace_function`, owns `$HOME/activity.json` + process-attribute span processor
+│   │   │   ├── foundry_host.py        ← sole owner of MAF Agent + AgentSession; MCPStreamableHTTPTool wiring
+│   │   │   ├── skill_loader.py        ← reads agent/skills/*/SKILL.md, registers with Agent
+│   │   │   ├── state_tools.py         ← agent-side @tool wrappers around state.py (the skill drives these)
+│   │   │   ├── workiq_token.py        ← SOW-Owner delegated WorkIQ token (MSAL silent acquire; not yet wired)
+│   │   │   └── workiq_token_cache.py  ← MSAL token-cache persistence shim over state.py
+│   │   ├── orchestrator.py            ← 3-verb dispatcher: echo, list_tools, run_skill
+│   │   ├── state.py                   ← $HOME read/write helpers (atomic; path-containment-checked)
+│   │   ├── workiq/                    ← placeholder package; skills call WorkIQ via the Toolbox directly today
+│   │   └── observability.py           ← `@trace_function`, owns `$HOME/activity.json` + process-attribute span processor
 │   └── tests/
-├── frontend/                          ← Container App (BFF + SPA)
+├── frontend/                          ← Container App (BFF + SPA) — stub only today
 │   ├── Dockerfile
-│   ├── backend/                       ← FastAPI; MSAL; Foundry Invocations client
-│   └── ui/                            ← React 18 + TypeScript + Vite SPA
-├── infra/                             ← Bicep or azd templates
+│   ├── backend/                       ← FastAPI stub; no real BFF yet
+│   └── ui/                            ← empty (SPA not started)
+├── infra/
 │   └── main.bicep
 └── .github/
     └── workflows/                     ← CI: lint, type-check, test, build, deploy
 ```
+
+**Aspirational layout (designed, not built):** the per-domain modules `charter/`, `kickoff/`, `capture/handlers/*`, `status/`, `actions/`, `consolidation/` and the eight-skill split under `agent/skills/`. Promote functionality into one of these only when the §4.4 decision rule says it's earned a Python home (bit-exact invariants, performance constraints, security gates) or when a second skill needs the same primitive.
 
 Two folders that are explicitly *not* in the repo: a `database/` and a `worker/` directory. If you find yourself wanting either, see invariants 4 and 6.
 
@@ -259,11 +271,11 @@ Two folders that are explicitly *not* in the repo: a `database/` and a `worker/`
 - **Language**: Python 3.12 for the agent and the BFF. Type-hinted, `ruff` + `pyright` clean. No untyped public functions.
 - **Tracing**: use the `@trace_function` decorator re-exported from `observability` for custom spans. Do not write `tracer.start_as_current_span(...)` by hand or build wrapper context managers — Foundry's instrumentor and the protocol server own the tracer provider and the App Insights exporter.
 - **Audit log**: every state-mutating step calls `observability.log_activity(...)` to append to `$HOME/activity.json`. This is product behaviour (the narrative the dashboard renders), not telemetry. Never call `print()` or bare `logging.info` for things that belong in the audit log.
-- **WorkIQ access**: Only through `agent/src/charter_agent/workiq/`. No direct MCP calls from orchestrator/kickoff/capture code. This makes mocking in tests possible. Token acquisition (SOW-Owner OBO, single-user, no fallback identity) is the sole responsibility of `runtime/workiq_token.py`; the `workiq/` wrappers ask for a token from there and never reach for credentials directly.
+- **WorkIQ access**: today, skills call WorkIQ tools directly through the host-runtime-attached Foundry Toolbox (`MCPStreamableHTTPTool`). The `agent/src/charter_agent/workiq/` package is a placeholder kept for the eventual thin-wrapper layer; when it lands, the rule becomes "no direct MCP calls from any non-`workiq/` module — `workiq/` is the only consumer of the Toolbox tool surface." Token acquisition (SOW-Owner delegated, single-user, no fallback identity) is the sole responsibility of `runtime/workiq_token.py`; the Toolbox auth hook will source tokens from there once wired.
 - **Host runtime**: Only through `agent/src/charter_agent/runtime/foundry_host.py`. One MAF `Agent` instance per agent process (kept warm). One MAF `AgentSession` thread per Foundry session, keyed by `FOUNDRY_AGENT_SESSION_ID`, persisted to `$HOME` — never recreated within the same Foundry session.
 - **Skills**: Project-workspace specialisation lives in `agent/skills/{name}/SKILL.md` and must be valid per the [agentskills.io spec](https://agentskills.io/specification) (see [§4.3](#43-agent-skills-format-agentskillsio-conformance)). Loaded at boot by `runtime/skill_loader.py` and injected into the host `Agent`. CI runs `skills-ref validate ./agent/skills/*` on every PR that touches the directory; PR is blocked on failure. Skill changes are code changes — reviewed, versioned, shipped with the agent image. Do not write per-project skills; the skills set is generic, the Charter is what the skills reason against. Before adding any new feature, run it through the decision rule in [§4.4](#44-core-code-vs-skill--the-decision-rule).
-- **JSON schemas**: Charter, state, suggested-action, and candidate-event schemas are defined in `agent/src/charter_agent/charter/schemas.py` as Pydantic models. The schemas in [architecture/architecture_and_design.md §5](architecture/architecture_and_design.md) are authoritative; the Pydantic models must round-trip them.
-- **Tests**: every WorkIQ wrapper has a unit test with a fixture-mocked MCP response. Every action executor has a test proving double-execution is a no-op. Every channel handler has a test for the "since" cursor.
+- **JSON schemas**: today, state-file shape is owned by `sow-response/SKILL.md` (see §11.4). When a file gains a second Python consumer or an external typed surface (the BFF), promote it to a Pydantic model under a new `charter/schemas.py` module — the JSON shapes in [architecture/architecture_and_design.md §5](architecture/architecture_and_design.md) are the design north star at that point.
+- **Tests**: every test that touches WorkIQ, MSAL, or external services must mock the boundary (`respx` for HTTP, `monkeypatch.setitem(sys.modules, "msal", ...)` for MSAL). Idempotency tests are required wherever a future outbound-action executor lands. Channel-handler cursor tests apply when `capture/handlers/*` exists.
 - **No comments** explaining *what* the code does. Only comments for *why* something non-obvious is the way it is. See [spec §10.13](functional-specs/project_workspace_spec.md) — the audit log is the narrative record, not source comments.
 - **Commit messages** should reference the spec section being implemented or changed (e.g. `kickoff: implement section 8.2 SharePoint channel handler`).
 
@@ -293,9 +305,10 @@ For each phase, the agent doing the work should:
 - [ ] If it adds a domain-specific behaviour, has it been moved into the Charter schema, an existing skill, or a new skill — *not* into orchestrator/handler/kickoff code?
 - [ ] If it touches `$HOME`, does it route through `state.py` and emit an activity-log entry?
 - [ ] If it calls WorkIQ, is the call going through `workiq/` and using a token obtained from `runtime/workiq_token.py` (SOW-Owner OBO, single-user, no fallback, per invariant 3)?
-- [ ] If it adds an outbound action, does it have a UUID and a check against `executed_action_ids`?
-- [ ] If it adds a new `watch_channel.kind`, is it registered in the channel registry (not switched on inline)?- [ ] If it adds a new `/invocations` action verb, is the action contract documented in [architecture §7](architecture/architecture_and_design.md)?
-- [ ] If it changed the Charter, state, action, or candidate-event schema, were the architecture doc and the Pydantic models updated together?
+- [ ] If it adds an outbound action that *will* be exposed via a typed `SuggestedAction` lifecycle, does it have a UUID and an idempotency check? (Today, idempotency is the skill's responsibility; when an `actions/` module lands, this becomes a hard check against `executed_action_ids`.)
+- [ ] If it adds a new channel poll loop, has the polling logic been added to the skill body (current pattern) rather than a switch statement in code? When the `capture/handlers/*` registry lands, this becomes "register in the registry, never `if channel.kind == \"...\":` inline."
+- [ ] If it adds a new `/invocations` action verb, is the verb dispatcher in `orchestrator.handle_invocation` updated *and* the verb documented in §11.2 + [architecture §7](architecture/architecture_and_design.md)?
+- [ ] If it changed a state-file shape that `sow-response/SKILL.md` reads or writes, was the skill body (and any relevant `references/*.md`) updated in the same PR?
 - [ ] Lint, type-check, and tests pass.
 
 ---
@@ -341,57 +354,47 @@ The BFF additionally sets these **per request** on outbound `/invocations` calls
 
 ### 11.2 `/invocations` action verbs
 
-All verbs share the response envelope `{ok: bool, action: str, result: {...}, dashboard?: {...}}`. `dashboard` is included on every state-mutating verb and on `render_dashboard`.
+All verbs share the response envelope `{ok: bool, action: str, result: {...}}`.
+
+**Current (shipped):**
 
 | Verb | Payload | `result` | Caller role |
 |---|---|---|---|
-| `propose_charter` | `{prompt: str}` | `{proposed_charter: Charter}` | coordinator |
-| `ratify_charter` | `{charter: Charter}` (edits allowed) | `{}` | coordinator |
-| `render_dashboard` | `{}` | `{}` | any (SSO + visibility filter) |
-| `execute_suggested` | `{approve_action_id: str}` | `{}` | coordinator |
-| `dismiss_suggested` | `{approve_action_id: str, reason: str}` | `{}` | coordinator |
-| `amend_charter` | `{amendment: AmendmentSpec}` | `{}` | coordinator |
-| `override_capture` | `{task_id: str, submission_id: str, action: "unmark"}` | `{}` | coordinator |
-| `coordinator_chat` | `{message: str}` | `{...}` (may stream via SSE; may internally trigger other verbs) | coordinator |
-| `close_project` | `{}` | `{}` | coordinator |
+| `echo` | `{message: str}` | `{count, session_id, session_resumed, echo}` | any (Phase 1 smoke) |
+| `list_tools` | `{}` | `{expected_workiq_servers, workiq_tool_count, workiq_tools, agent_side_tools, loaded_skills}` | diagnostics |
+| `run_skill` | `{skill_name: str, prompt: str}` | `{response_text, ...}` (skill-dependent) | coordinator |
+
+Every product workflow today goes through `run_skill` with `skill_name="sow-response"`. The model picks tools, drives state, and returns a single response. There is no Pydantic-validated response envelope on top.
+
+**Aspirational (designed, not built):** the nine-verb contract listed in §1.5 (`propose_charter`, `ratify_charter`, `render_dashboard`, `execute_suggested`, `dismiss_suggested`, `amend_charter`, `override_capture`, `coordinator_chat`, `close_project`) plus a `dashboard` envelope field. These would be added incrementally if the BFF + SPA actually need typed verb boundaries; until then the single `run_skill` verb is enough.
 
 New verbs must be added to the orchestrator dispatcher *and* documented in [architecture §7](architecture/architecture_and_design.md) in the same PR.
 
 ### 11.3 Skills contract
 
-All skills live in `agent/skills/{name}/SKILL.md`, are valid per the [agentskills.io spec](https://agentskills.io/specification) (see [§4.3](#43-agent-skills-format-agentskillsio-conformance) for the format contract and [§4.4](#44-core-code-vs-skill--the-decision-rule) for what belongs in a skill vs in code), loaded at process start by `runtime/skill_loader.py` and injected into the host `Agent`, and invoked via `foundry_host.run_skill(name, **inputs)`. The skills set is generic across projects; per-project variety comes from the Charter the skills reason against. All skills run on the single host runtime — there is no codegen sub-agent or generated module path (see invariant 12).
+All skills live in `agent/skills/{name}/SKILL.md`, are valid per the [agentskills.io spec](https://agentskills.io/specification) (see [§4.3](#43-agent-skills-format-agentskillsio-conformance) for the format contract and [§4.4](#44-core-code-vs-skill--the-decision-rule) for what belongs in a skill vs in code), loaded at process start by `runtime/skill_loader.py` and injected into the host `Agent`, and invoked via the `run_skill` verb. The skills set is generic across projects; per-project variety comes from the Charter the skills reason against. All skills run on the single host runtime — there is no codegen sub-agent or generated module path (see invariant 12).
 
-| Skill | Responsibility | Inputs | Outputs | Invoked by |
-|---|---|---|---|---|
-| `project-kickoff` | Ground the kickoff prompt by calling `workiq.ask` for open-ended discovery, then drilling into specific files / messages / meetings / tasks with typed WorkIQ tools; the grounding source is unconstrained (triggering email or meeting, prior similar artifact, organisation runbook, or any combination). If the prompt cites a specific source, retrieve it directly; if it cites none, surface discovered candidates and cite which were used (flag plausible alternatives so the coordinator can redirect at ratification). Then fan out post-ratification: SharePoint folder, templated task files, briefing emails, Outlook tasks, Teams kickoff message | kickoff prompt, ratified Charter, stakeholders | execution confirmations, audit entries (including cited grounding sources) | `orchestrator.propose_charter` → skill (grounding + draft); `orchestrator.ratify_charter` → `kickoff.fanout` (execution) |
-| `status-refresh` | Triangulate per-task status from submissions, channel signals, OOO calendar | state.tasks, channel signals, calendar | status ∈ `{Assigned, InProgress, Submitted, SubmittedWithGaps, Overdue}` | `orchestrator.render_dashboard` → `status.triangulate` |
-| `capture-classify` | Label a `CandidateEvent` as `submission ǀ revised_submission ǀ question ǀ supporting_material ǀ unrelated` | `CandidateEvent`, matching `Task`, Charter slice | `{label, confidence, rationale, needs_review}` (needs_review when confidence < 0.7) | capture loop |
-| `compliance-check` | Validate submission against `task.runbook_requirements` | extracted submission content, requirements | per-requirement `{requirement_id, status: met ǀ unmet ǀ gap, evidence}` | capture loop (on `submission`) |
-| `draft-outbound` | Draft nudges, clarifications, reassignments for coordinator approval | Charter, state, triangulated status | `SuggestedAction[]` | `orchestrator.render_dashboard` → `actions.draft` |
-| `consolidate` | Orchestrate final-deliverable assembly + cross-section reconciliation declaratively: stitch per-section submissions into the final document via WorkIQ Word/SharePoint tool calls, surface gaps and formatting issues. No generated Python | Charter, state (all submissions), `consolidation_rules` | findings (matches, gaps, formatting issues), `output_path` | `orchestrator.render_dashboard` → `consolidation.run` |
-| `amend-charter` | Walk coordinator through a Charter amendment (re-ratification flow per architecture §4.4); on accept, increment `version` | current Charter, proposed `AmendmentSpec` | new Charter (immutable until ratified) | `orchestrator.amend_charter` |
+**Current (shipped):**
 
-A `render-dashboard` skill also exists to serialise the SPA payload (widgets + chat). Because the app is single-user, no viewer-role filtering is performed — the SOW Owner sees everything. Skill changes are code changes — reviewed, versioned, shipped with the agent image.
+| Skill | Responsibility | Modes | References |
+|---|---|---|---|
+| `sow-response` | End-to-end SOW response workflow: mode-detect (first-run vs resume), ground kickoff from a triggering email / meeting / prior artifact, propose+ratify Charter, fan out to M365 (SharePoint, Teams, Outlook, email), poll channels for submissions, classify per [`references/CLASSIFICATION_RUBRIC.md`](agent/skills/sow-response/references/CLASSIFICATION_RUBRIC.md), update `project_log.json` status, draft (but never auto-send) nudges/clarifications, and consolidate final Word deliverable per [`references/CONSOLIDATION_RULES.md`](agent/skills/sow-response/references/CONSOLIDATION_RULES.md) | §1 mode-detect → §2–§7 first-run, §8 resume, §9 capture & classify, §10 must-NOT rules | [`SOW_SECTIONS.md`](agent/skills/sow-response/references/SOW_SECTIONS.md), [`COMMUNICATION_MATRIX.md`](agent/skills/sow-response/references/COMMUNICATION_MATRIX.md) |
+
+**Aspirational (designed, not built):** the eight-skill split listed in §1.5. The split is appealing because each skill body would be shorter and individually testable, but the cut points are workflow-stage boundaries that the model crosses naturally inside one `sow-response` turn. Promote one of those slices out into its own skill only when (a) a second project workflow needs the same slice with different surrounding context, or (b) the `sow-response` body grows past ~500 lines / ~5 000 tokens (the agentskills.io progressive-disclosure budget).
+
+Skill changes are code changes — reviewed, versioned, shipped with the agent image.
 
 ### 11.4 Schemas (summary)
 
-Authoritative Pydantic models live in `agent/src/charter_agent/charter/schemas.py`. Full JSON shape is in [architecture §5](architecture/architecture_and_design.md). What every builder needs to know:
+**Current (shipped):** state shape is owned by the [`sow-response/SKILL.md`](agent/skills/sow-response/SKILL.md) body, not by Pydantic models. There is no `charter/schemas.py`. Files the skill writes/reads through the generic `state_*` tools, all under `$HOME`:
 
-**`charter.json` (v1, immutable outside ratify/amend):**
-`project_id, version, project_kind, stakeholders {sow_owner, assignees[]}, tasks[…], watch_channels[{kind, config}], consolidation_rules, deliverable {output_location, format}, ratified_at, ratified_by`. The `sow_owner` is the single human user of the dashboard; `assignees` are people who receive M365 nudges from the agent but do not sign in.
-Retired in v1 (do not reintroduce): `compliance_module_path`, `renderer_module_path`, `consolidator_module_path`. Those behaviours are skills.
+- **`project_charter.md`** — Markdown, not JSON. The ratified charter document the agent emits at kickoff and treats as immutable thereafter. Schema is whatever the skill's §3–§4 prompt produces.
+- **`project_log.json`** — Per-project working state. Skill-defined shape; current keys include `project_id`, `customer`, top-level `status` (enum, may be `kicked_off` / `submitted` / `submitted_with_gaps` / `closed`), `kickoff_sent`, and `tasks[]` with per-task `task_id, title, owner_upn, status, kickoff_sent, last_polled_at, submissions[], runbook_requirements`. The skill body is authoritative — read [§9 of the skill](agent/skills/sow-response/SKILL.md) before changing the shape.
+- **`activity.json`** — Append-only NDJSON written by `observability.log_activity(...)`. One object per line: `{at, actor, kind, summary}`. Used both as the human-facing audit narrative and as a recovery trail.
+- **`agent_session/<session-id>.json`** — MAF `AgentSession` thread persistence (owned by MAF, not by skill code).
+- **`state.json`** — Legacy Phase-1 counter for the `echo` verb. Don't add new fields here.
 
-**`state.json` (per-Foundry-session in `$HOME`):**
-`schema_version, project_id, session_started_at, last_full_refresh_at, last_full_refresh_by, tasks{task_id → {status, last_check, submissions[…], channel_signals}}, exceptions[…], suggested_actions{action_id → …}, executed_action_ids[], consolidation {last_run_at, output_path, findings[…]}, closed`.
-
-**`activity.json` (append-only NDJSON, one object per line):**
-`{at, actor, kind: kickoff ǀ capture ǀ classify ǀ draft_action ǀ execute_action ǀ amend ǀ consolidate ǀ close, ref, summary, span_id}`.
-
-**`SuggestedAction`:**
-`{action_id: UUIDv4, drafted_at, kind: nudge_owner ǀ clarify_gap ǀ propose_reassign ǀ propose_amendment, target {upn, channel}, reason, draft_payload, status: pending ǀ approved ǀ executed ǀ dismissed}`. Status is immutable once `executed` or `dismissed`. `execute_suggested` checks `action_id in state.executed_action_ids` **before** the WorkIQ side-effect call.
-
-**`CandidateEvent`:**
-`{event_id (channel-specific dedup key), channel, occurred_at, actor, summary, payload_ref}`.
+**Aspirational (designed, not built):** the Pydantic-modelled `charter.json` (versioned, immutable outside ratify/amend), `SuggestedAction` lifecycle, and `CandidateEvent` envelope described in earlier drafts of this contract and in [architecture §5](architecture/architecture_and_design.md). Promote a file to a Pydantic schema only when (a) more than one Python module reads or writes it (today only the skill body does), or (b) an external surface needs a typed contract on it (the BFF will, when it lands).
 
 ### 11.5 Agent boot sequence
 
@@ -437,22 +440,34 @@ The FastAPI BFF at `frontend/backend/` is the **only** caller of the agent's `/i
 
 ### 11.8 Test matrix
 
+**Current (shipped, 43 tests passing as of May 20, 2026):**
+
+| Layer | What's tested |
+|---|---|
+| `state.py` | Atomic write (temp+rename), JSON round-trip, NDJSON append-only-ness, path containment, `$HOME` isolation |
+| `runtime/state_tools.py` | Each `@tool` wrapper round-trips through `state.py`; rejects path escapes |
+| `runtime/skill_loader.py` | Rejects invalid YAML frontmatter; `name` must equal parent dir; description length bounds |
+| `runtime/workiq_token.py` | SOW-Owner OBO refresh path; raises `WorkIQTokenUnavailable` with typed `reason` on config-missing / bootstrap-missing / refresh-failed / CA-blocked / auth-failed / token-malformed; MSAL mocked via `sys.modules` injection; cache persistence on dirty / no-write on clean / reload from `$HOME` |
+| `workiq/__init__.py` | Server enumeration & expected tool count |
+| `orchestrator.handle_invocation` | All three verbs (`echo`, `list_tools`, `run_skill`); error envelope shape |
+
+Test infra: `pytest`, `pytest-asyncio` (in `agent/tests/`); `conftest.py` autouse `isolated_home` fixture (sets `HOME` to `tmp_path`).
+
+**Aspirational (designed, gated on the corresponding module landing):**
+
 | Layer | What to test | Gate |
 |---|---|---|
-| `state.py` | Atomic write (temp+rename), Pydantic ↔ JSON round-trip, NDJSON append-only-ness, MAF `AgentSession` persistence round-trip | always |
-| `workiq/` wrappers | Correct MCP call shape, token sourced from `runtime/workiq_token.py`, response parsing (`respx` mocks) | always |
-| `runtime/workiq_token.py` | SOW-Owner OBO refresh; surfaces a typed exception when the token cannot be obtained (CA block, revoked) — no fallback identity; correct claims (`upn`, `oid`) on the issued token | always |
-| `runtime/foundry_host.py` | Warm `Agent` reuse within Foundry session; `MCPTool` header injector receives a fresh SOW-Owner token per call | always |
-| `runtime/skill_loader.py` | Rejects invalid YAML frontmatter; `name` must equal parent dir; description length bounds | always |
-| `capture/handlers/*` | Cursor correctness (no missed/duplicated events across two polls), author filtering | always |
-| `capture/` classifier | Golden-file tests against ≥30 labelled fixture events from the board-pack scenario | `RUN_HOST_MODEL_TESTS=1` |
-| `status/triangulate.py` | Spec §8.3 truth table — parameterised across all combos | always |
-| `actions/` | Double-execute is idempotent no-op; dismissed cannot be re-approved; outbound side-effects always sourced from SOW-Owner OBO | always |
-| `charter/` | Ratification rejects invalid Charters; amendment increments `version`; orphan-dependency detection | always |
-| Boot smoke | Boot fails fast if any required env var is missing; the host runtime reaches a healthy state on a real Foundry sandbox; SOW-Owner OBO yields a valid WorkIQ token | always |
-| E2E (Phase 4+) | Bundled sample meeting-notes scenario end-to-end against test M365 tenant + dev Foundry project | manual, phase-gated |
+| `workiq/` thin wrappers | Correct MCP call shape, token sourced from `runtime/workiq_token.py`, response parsing (`respx` mocks) | when `workiq/*.py` wrappers land |
+| `runtime/foundry_host.py` | Warm `Agent` reuse within Foundry session; `MCPStreamableHTTPTool` auth hook receives a fresh SOW-Owner token per call | always (currently only smoke-tested via `dev_run.py`) |
+| `capture/handlers/*` | Cursor correctness (no missed/duplicated events across two polls), author filtering | when capture/ extracted from skill |
+| `capture/` classifier | Golden-file tests against ≥30 labelled fixture events | when classifier extracted from skill; `RUN_HOST_MODEL_TESTS=1` |
+| `status/triangulate.py` | Spec §8.3 truth table — parameterised across all combos | when status/ exists |
+| `actions/` | Double-execute is idempotent no-op; dismissed cannot be re-approved; outbound side-effects always sourced from SOW-Owner OBO | when actions/ exists |
+| `charter/` | Ratification rejects invalid Charters; amendment increments `version`; orphan-dependency detection | when charter/schemas.py lands |
+| Boot smoke | Boot fails fast if any required env var is missing; reaches healthy state on a real Foundry sandbox; SOW-Owner OBO yields a valid WorkIQ token | when production-bound |
+| E2E (Phase 4+) | Bundled sample scenario end-to-end against test M365 tenant + dev Foundry project | manual, phase-gated |
 
-Test infra: `pytest`, `pytest-asyncio`, `respx`, `freezegun`, `import-linter` (CI gate enforcing `runtime/foundry_host.py` as the sole instantiator of `Agent` and `FoundryChatClient`).
+Future CI gates to add when the corresponding modules land: `ruff`, `pyright`, `import-linter` (enforcing `runtime/foundry_host.py` as the sole instantiator of `Agent` and `FoundryChatClient`), `respx`, `freezegun`.
 
 ### 11.9 Dependency manifest
 
@@ -468,17 +483,19 @@ Pin these in `agent/pyproject.toml`. Do not substitute without an ADR.
 
 ### 11.10 Phases
 
-Per [spec §9](functional-specs/project_workspace_spec.md). Do not skip ahead; each phase produces a runnable artifact.
+Per [spec §9](functional-specs/project_workspace_spec.md). Do not skip ahead; each phase produces a runnable artifact. Status as of May 20, 2026.
 
-| Phase | Scope | Verbs newly exercised | Demoable outcome |
+| Phase | Scope | Verbs newly exercised | Status |
 |---|---|---|---|
-| 1. Skeleton | `__main__`, `runtime/foundry_host` (warm-only), `runtime/skill_loader` (load empty set), `orchestrator`, `state` (counter only), frontend skeleton | `echo` | Two browsers, same `project_id`, same counter; MAF `AgentSession` resumed across requests |
-| 2. Charter & kickoff | `charter/`, `kickoff/`, `workiq/` (Mail/Files/Teams/Tasks), `project-kickoff` skill | `propose_charter`, `ratify_charter` | Real M365 fan-out for the bundled sample scenario |
-| 3. Skills | All `agent/skills/*`, `consolidation/` | (exercised by Phase 2/4 paths) | Skills loaded by `runtime/skill_loader`; `consolidate` skill produces a deliverable doc via WorkIQ Word/SharePoint tool calls |
-| 4. Capture loop | `capture/`, `status/triangulate`, `actions/` (draft only) | `render_dashboard` | Live status changes as deliveries land on channels |
-| 5. Dashboard + approvals | SPA, exceptions panel, `actions/execute`, `actions/dismiss`, coordinator chat | `execute_suggested`, `dismiss_suggested`, `coordinator_chat` | Approve real Teams nudge sent as coordinator OBO |
-| 6. Consolidation + closure | `consolidation/`, `charter/amend`, close path, `amend-charter` skill | `amend_charter`, `close_project`, `override_capture` | Reconciliation fires; project closes; deliverable on SharePoint |
-| 7. Hardening | All modules; idempotency edge cases, CA-block recovery (typed exception + manual re-auth flow), audit-log review | — | Production-ready: tests, recovery, telemetry complete |
+| 1. Skeleton | `__main__`, `runtime/foundry_host` (warm-only), `runtime/skill_loader`, `orchestrator`, `state` (counter) | `echo` | ✅ done |
+| 2. Charter & kickoff | `sow-response/SKILL.md` §2–§7 (first-run mode) drives kickoff via WorkIQ Mail/Files/Teams/Tasks through the Toolbox; no separate `charter/` / `kickoff/` modules | (still via `run_skill`) | ✅ done (skill-driven, not modular) |
+| 3. Skills | `sow-response/` ships with `references/` for sections, communication matrix, classification rubric, consolidation rules | (skill-internal) | ✅ done (one skill, not eight) |
+| 4. Capture loop | `sow-response/SKILL.md` §8–§9 (resume + classify-and-flip); no separate `capture/` module yet; resume smoke validated end-to-end via `scripts/smoke_resume.py` | (still via `run_skill`) | 🟡 partial — resume + status update work via the skill; classify-and-flip awaits a real reply landing in the inbox to fully exercise |
+| 5. Dashboard + approvals | SPA, BFF, exceptions panel, action approval lifecycle | `execute_suggested`, `dismiss_suggested`, `coordinator_chat` | ⬜ not started |
+| 6. Consolidation + closure | Skill-driven consolidation; amendment + close paths | `amend_charter`, `close_project`, `override_capture` | ⬜ not started |
+| 7. Hardening | Idempotency edge cases, CA-block recovery (typed `WorkIQTokenUnavailable` exception + manual re-auth flow), audit-log review | — | ⬜ not started |
+
+The per-domain Python modules (`charter/`, `kickoff/`, `capture/`, `status/`, `actions/`, `consolidation/`) named in the original phase plan have **not** been built and may never be — the §4.4 decision rule keeps each behaviour in the skill until it earns a Python home.
 
 ---
 
