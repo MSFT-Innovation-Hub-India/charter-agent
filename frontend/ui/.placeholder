@@ -1,2 +1,0 @@
-// Phase 1: minimal SPA shell is inlined in the BFF (`app/main.py`).
-// The Vite/React project lands in Phase 5 alongside the real dashboard.

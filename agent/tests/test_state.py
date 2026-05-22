@@ -8,12 +8,6 @@ import pytest
 from charter_agent import state
 
 
-def test_counter_starts_at_zero_and_bumps(isolated_home: Path) -> None:
-    assert state.bump_counter() == 1
-    assert state.bump_counter() == 2
-    assert state.read_json("state.json")["counter"] == 2
-
-
 def test_write_text_is_atomic(isolated_home: Path) -> None:
     state.write_text("notes/a.md", "hello")
     assert (isolated_home / "notes" / "a.md").read_text(encoding="utf-8") == "hello"

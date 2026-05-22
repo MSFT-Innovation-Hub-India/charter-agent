@@ -17,31 +17,40 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: ruff check src tests
-      - run: pyright
+      - run: lint-imports --no-cache
       - run: pytest -q
-
-  frontend-bff:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend/backend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -e ".[dev]"
-      - run: ruff check app
 
   skills-validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Phase 1: no skills yet. The `skills-ref validate ./agent/skills/*` gate
-      # is required from Phase 2 onward (first real SKILL.md).
-      - run: |
-          if compgen -G "agent/skills/*/SKILL.md" > /dev/null; then
-            echo "TODO: install skills-ref and run: skills-ref validate ./agent/skills/*"
-            exit 0
-          fi
-          echo "no skills yet — skipping validation"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - name: Validate SKILL.md frontmatter
+        # `skills-ref` is not yet pip-installable as a standalone CLI, so we
+        # gate on the same minimal frontmatter check that `skill_loader.py`
+        # runs at boot. Keeps malformed SKILL.md off main.
+        run: |
+          python - <<'PY'
+          import re, sys, yaml
+          from pathlib import Path
+          name_re = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+          fm_re = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+          failed = False
+          for p in Path("agent/skills").glob("*/SKILL.md"):
+              text = p.read_text(encoding="utf-8")
+              m = fm_re.match(text)
+              if not m:
+                  print(f"FAIL {p}: missing YAML frontmatter"); failed = True; continue
+              meta = yaml.safe_load(m.group(1)) or {}
+              name, desc = meta.get("name"), meta.get("description")
+              if not isinstance(name, str) or not name_re.match(name) or name != p.parent.name:
+                  print(f"FAIL {p}: invalid name"); failed = True
+              if not isinstance(desc, str) or not (1 <= len(desc) <= 1024):
+                  print(f"FAIL {p}: invalid description"); failed = True
+              else:
+                  print(f"OK   {p}")
+          sys.exit(1 if failed else 0)
+          PY

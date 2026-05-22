@@ -84,8 +84,6 @@ frontend/ui/build/
 # Azure / IaC
 # =====================================================================
 .azure/
-# Bicep: compiled ARM JSON
-infra/**/*.bicep.json
 # Terraform: state + local providers (lockfile IS committed)
 **/.terraform/
 **/terraform.tfstate
@@ -150,3 +148,4 @@ $RECYCLE.BIN/
 # =====================================================================
 docker-compose.override.yml
 .docker/
+.azure

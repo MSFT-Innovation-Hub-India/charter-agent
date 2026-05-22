@@ -1,29 +1,30 @@
-"""Boot entrypoint: assert env policy, warm runtimes, load skills, start server."""
+"""Boot entrypoint: assert env policy, warm runtimes, load skills, start the
+Responses-protocol server.
+
+This agent serves the OpenAI-compatible Responses protocol only — `/responses`
++ SSE streaming, multi-turn via `previous_response_id`. The hosting framework
+(`agent-framework-foundry-hosting.ResponsesHostServer`) owns conversation
+history; we hand it one warm MAF `Agent` whose instructions are the
+`sow-response` skill body and whose tools are the WorkIQ Toolbox plus the
+agent-side `$HOME` state tools.
+"""
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any, cast
+from typing import cast
 
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
 from .observability import ProcessAttributesSpanProcessor
-from .orchestrator import handle_invocation
-from .runtime import foundry_host, skill_loader
+from .runtime import foundry_host, responses_host, skill_loader
 
 log = logging.getLogger("charter_agent")
 
 
 def _assert_env() -> None:
-    # Phase 1 + Toolbox wiring: host model + Foundry project + Toolbox name.
-    # As Phase 1.5+ modules land, add asserts for GITHUB_TOKEN (codegen sub-agent)
-    # and COORDINATOR_OBO_* (when runtime/workiq_token.py is built; until then
-    # WorkIQ runs in whatever identity DefaultAzureCredential resolves to —
-    # locally, the developer's `az login` user; in production, the agent's
-    # Foundry-assigned managed identity, which won't work against WorkIQ until
-    # OBO swap is wired).
     required = [
         "AZURE_AI_MODEL_DEPLOYMENT_NAME",
         "FOUNDRY_PROJECT_ENDPOINT",
@@ -35,15 +36,14 @@ def _assert_env() -> None:
 
 
 def _enable_tracing() -> None:
-    # Opt in to the Foundry SDK's GenAI instrumentation. App Insights export
-    # is configured by the platform (auto-injected connection string); we just
-    # turn on the instrumentor and attach our per-process attribute injector.
-    os.environ.setdefault("AZURE_EXPERIMENTAL_ENABLE_GENAI_TRACING", "true")
-
-    from azure.ai.projects.telemetry import AIProjectInstrumentor
-
-    AIProjectInstrumentor().instrument()
-
+    # Server-side GenAI spans are emitted by Foundry automatically once App
+    # Insights is connected. We deliberately do NOT call
+    # `AIProjectInstrumentor().instrument()` — azure-ai-projects 2.0.1/2.1.0's
+    # Responses instrumentor wraps the upstream stream in an `AsyncStreamWrapper`
+    # that lacks the `.headers` attribute `agent_framework_foundry`'s streaming
+    # consumer reads, crashing every Responses turn with
+    # `'AsyncStreamWrapper' object has no attribute 'headers'`. Re-enable once
+    # that upstream bug is fixed.
     provider = trace.get_tracer_provider()
     if isinstance(provider, TracerProvider):
         cast(TracerProvider, provider).add_span_processor(ProcessAttributesSpanProcessor())
@@ -73,31 +73,8 @@ def _boot() -> None:
 
 def main() -> None:
     _boot()
-
-    from azure.ai.agentserver.invocations import InvocationAgentServerHost
-    from starlette.requests import Request
-    from starlette.responses import JSONResponse, Response
-
-    app = InvocationAgentServerHost()
-
-    @app.invoke_handler
-    async def _invoke(request: Request) -> Response:
-        body = await request.json()
-        action = body.get("action", "echo")
-        payload = body.get("payload") or {}
-
-        # The BFF (Phase 5) will populate `visitor` from the MSAL token claims.
-        # For now we surface what the platform / dev caller gave us so the
-        # orchestrator and handlers see a stable shape.
-        visitor: dict[str, Any] = body.get("visitor") or {}
-        visitor.setdefault("session_id", request.state.session_id)
-        visitor.setdefault("chat_isolation_key", request.state.chat_isolation_key)
-        visitor.setdefault("user_isolation_key", request.state.user_isolation_key)
-
-        result = await handle_invocation(action, payload, visitor)
-        return JSONResponse(result)
-
-    app.run()
+    log.info("starting Responses protocol server")
+    responses_host.start()
 
 
 if __name__ == "__main__":

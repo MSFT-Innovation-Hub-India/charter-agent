@@ -61,7 +61,7 @@ def skills_dir() -> Path:
     override = os.environ.get("CHARTER_AGENT_SKILLS_DIR")
     if override:
         return Path(override)
-    # runtime/skill_loader.py → runtime → charter_agent → src → agent; agent/skills/ holds the skill folders.
+    # parents: runtime → charter_agent → src → agent. Skill folders live under agent/skills/.
     return Path(__file__).resolve().parents[3] / "skills"
 
 

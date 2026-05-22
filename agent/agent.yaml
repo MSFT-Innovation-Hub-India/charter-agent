@@ -1,28 +1,20 @@
-apiVersion: foundry.azure.com/v1
-kind: HostedAgent
-metadata:
-  name: charter-agent
-spec:
-  protocol: invocations
-  runtime:
-    image: charter-agent:latest
-    platform: linux/amd64
-  env:
-    - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
-      value: gpt-5
-    - name: FOUNDRY_PROJECT_ENDPOINT
-      value: https://ocvp-agent-svc-resource.services.ai.azure.com/api/projects/ocvp-agent-svc
-    - name: TOOLBOX_NAME
-      value: Charter-Agent-Tools
-    # TOOLBOX_VERSION pin for dev only — omit in prod to use the consumer endpoint.
-    # - name: TOOLBOX_VERSION
-    #   value: "1"
-    # Phase 1.5+ (uncomment as modules land):
-    # - name: GITHUB_TOKEN
-    #   valueFrom: { keyVault: { secret: charter-agent-github-pat } }
-    # - name: COORDINATOR_OBO_TENANT_ID
-    #   valueFrom: { keyVault: { secret: coordinator-obo-tenant-id } }
-    # - name: COORDINATOR_OBO_CLIENT_ID
-    #   valueFrom: { keyVault: { secret: coordinator-obo-client-id } }
-    # - name: COORDINATOR_OBO_CLIENT_SECRET
-    #   valueFrom: { keyVault: { secret: coordinator-obo-client-secret } }
+# Foundry hosted-agent deployment manifest. Schema per
+# https://github.com/microsoft-foundry/foundry-samples/tree/main/samples/python/hosted-agents/agent-framework
+#
+# `azd deploy` packages this directory as a container image and registers it
+# with the Foundry Agent Service using this manifest. Foundry auto-injects
+# FOUNDRY_PROJECT_ENDPOINT, AZURE_AI_MODEL_DEPLOYMENT_NAME (resolved against
+# the model resource named below), and APPLICATIONINSIGHTS_CONNECTION_STRING.
+kind: hosted
+name: charter-agent
+protocols:
+  - protocol: responses
+    version: 1.0.0
+resources:
+  cpu: "0.5"
+  memory: 1Gi
+environment_variables:
+  - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+    value: ${AZURE_AI_MODEL_DEPLOYMENT_NAME}
+  - name: TOOLBOX_NAME
+    value: "Charter-Agent-Tools"

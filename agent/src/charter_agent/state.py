@@ -109,16 +109,3 @@ def list_files(rel_path: str = ".") -> list[str]:
         for p in base.rglob("*")
         if p.is_file()
     )
-
-
-# --- echo-demo counter (Phase 1 smoke verb) -------------------------------
-
-_COUNTER_FILE = "state.json"
-
-
-def bump_counter() -> int:
-    s: dict[str, Any] = read_json(_COUNTER_FILE) if exists(_COUNTER_FILE) else {}
-    n = int(s.get("counter", 0)) + 1
-    s["counter"] = n
-    write_json(_COUNTER_FILE, s)
-    return n

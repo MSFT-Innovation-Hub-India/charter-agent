@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from azure.ai.projects.telemetry import trace_function
@@ -50,7 +50,7 @@ def log_activity(
     ref: str | None = None,
 ) -> None:
     entry = {
-        "at": datetime.now(timezone.utc).isoformat(),
+        "at": datetime.now(UTC).isoformat(),
         "actor": actor,
         "kind": kind,
         "summary": summary,

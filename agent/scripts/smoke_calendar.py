@@ -1,4 +1,4 @@
-"""One-shot smoke: ask the host ChatAgent a calendar question and print whatever
+"""One-shot smoke: ask the host Agent a calendar question and print whatever
 came back — final text plus any tool-call traces. Uses the live Toolbox via
 `runtime.foundry_host`. Run from the agent/ directory:
 

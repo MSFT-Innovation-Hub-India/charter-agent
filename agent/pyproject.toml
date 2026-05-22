@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Foundry hosted agent for cross-functional project coordination."
 requires-python = ">=3.12"
 dependencies = [
-  "azure-ai-agentserver-invocations",
   # MAF: pin the specific sub-packages we actually use. The umbrella
   # `agent-framework` meta-package pulls `agent-framework-core[all]`, which
   # drags every provider (Anthropic, Bedrock, Mem0, Qdrant, Hyperlight,
@@ -13,12 +12,12 @@ dependencies = [
   # releases import symbols (`BaseContextProvider`, `agent_framework.azure._entra_id_authentication`)
   # that don't exist in any released `agent-framework-core`. The shipped
   # equivalent is `agent-framework-foundry` (FoundryChatClient, FoundryAgent).
-  "agent-framework-core",
-  "agent-framework-foundry",
+  "agent-framework-core>=1.6.0",
+  "agent-framework-foundry>=1.6.0",
+  "agent-framework-foundry-hosting",
   "mcp",
   "azure-ai-projects>=2.0.0",
   "azure-identity",
-  "msal",
   "aiohttp",
   "httpx",
   "pydantic>=2",
@@ -79,5 +78,10 @@ ignore_imports = [
   # It does NOT instantiate Agent/ChatClient/Toolbox; the contract's spirit
   # (one owner of the host runtime) is preserved.
   "charter_agent.runtime.state_tools -> agent_framework",
+  # responses_host wraps the warm FoundryChatClient (owned by foundry_host)
+  # in a MAF Agent and hands it to ResponsesHostServer. It is the Responses
+  # boot-path counterpart of foundry_host.run_skill; both live in runtime/.
+  "charter_agent.runtime.responses_host -> agent_framework",
+  "charter_agent.runtime.responses_host -> agent_framework_foundry_hosting",
 ]
 unmatched_ignore_imports_alerting = "none"
