@@ -32,6 +32,14 @@ AGENT_RESPONSES_URL = os.environ.get("AGENT_RESPONSES_URL", "").strip()
 TENANT_ID = os.environ.get("SPIKE_TENANT_ID") or None
 SCOPE = "https://ai.azure.com/.default"
 HTTP_TIMEOUT = httpx.Timeout(300.0, connect=30.0)
+# Session binding (AGENTS.md §11.7 + Foundry hosted-sessions docs):
+#  - If AGENT_PROJECT_ID is set, we send it as `agent_session_id` on every call
+#    -> the client picks the sandbox name (useful for "open project X" UX).
+#  - If unset, the first call omits it; the platform creates a sandbox and
+#    echoes the id back on `response.created` / `response.completed` -> we
+#    capture it and pass it back on every subsequent call in the same run.
+# Both patterns hit the same sandbox on call #2+; only the *naming* differs.
+PROJECT_ID = (os.environ.get("AGENT_PROJECT_ID") or "").strip() or None
 
 
 def fail(msg: str) -> None:
@@ -86,12 +94,21 @@ def call_agent(
     prompt: str,
     *,
     previous_response_id: str | None,
-) -> tuple[str | None, str | None, dict | None]:
+    agent_session_id: str | None,
+) -> tuple[str | None, str | None, str | None, dict | None]:
     """POST one /responses turn, stream SSE, print events.
 
-    Returns: (response_id, completed_text, consent_request_payload).
+    Returns: (response_id, agent_session_id, completed_text, consent_request_payload).
+    The returned `agent_session_id` is whatever the server reports on the
+    response object (it's a top-level field alongside `id`). On the first call
+    without a client-supplied id, this is the platform-generated value the
+    caller should hold onto for subsequent turns.
     """
     body: dict[str, Any] = {"input": prompt, "stream": True, "store": False}
+    if agent_session_id:
+        # Bind this turn to the named (or previously-captured) sandbox so the
+        # per-session microVM $HOME survives across turns.
+        body["agent_session_id"] = agent_session_id
     if previous_response_id:
         body["previous_response_id"] = previous_response_id
 
@@ -100,12 +117,20 @@ def call_agent(
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
     }
+    if agent_session_id:
+        # AGENTS.md §11.7: the chat isolation key tracks the same project id.
+        headers["x-agent-chat-isolation-key"] = agent_session_id
 
     response_id: str | None = None
+    returned_session_id: str | None = None
     completed_text: str | None = None
     consent_payload: dict | None = None
 
     print(f"\n[call] POST {AGENT_RESPONSES_URL}")
+    if agent_session_id:
+        print(f"[call] agent_session_id={agent_session_id!r}  (sent in body + header)")
+    else:
+        print("[call] no agent_session_id sent; platform will create one")
     if previous_response_id:
         print(f"[call] resuming previous_response_id={previous_response_id}")
     print(f"[call] prompt: {prompt!r}\n")
@@ -126,7 +151,16 @@ def call_agent(
                     continue
 
                 if data.get("type") == "response.created":
-                    response_id = data.get("response", {}).get("id") or data.get("id")
+                    response_obj = data.get("response") or {}
+                    response_id = response_obj.get("id") or data.get("id")
+                    # The platform echoes `agent_session_id` as a top-level
+                    # field on the response object (see Foundry hosted-sessions
+                    # docs / OpenAI SDK `response.model_extra`).
+                    returned_session_id = (
+                        response_obj.get("agent_session_id")
+                        or data.get("agent_session_id")
+                        or returned_session_id
+                    )
 
                 # Surface error payloads so we can diagnose server-side failures.
                 if tag in ("response.failed", "error", "response.error") or (
@@ -151,7 +185,13 @@ def call_agent(
 
                 if data.get("type") == "response.completed":
                     print(f"     -> payload: {json.dumps(data, indent=2)[:4000]}")
-                    out = data.get("response", {}).get("output") or []
+                    response_obj = data.get("response") or {}
+                    returned_session_id = (
+                        response_obj.get("agent_session_id")
+                        or data.get("agent_session_id")
+                        or returned_session_id
+                    )
+                    out = response_obj.get("output") or []
                     text_parts: list[str] = []
                     for item in out:
                         for c in (item.get("content") or []):
@@ -161,7 +201,9 @@ def call_agent(
                         completed_text = "\n".join(text_parts)
 
     print()  # newline after any inline streaming text
-    return response_id, completed_text, consent_payload
+    if returned_session_id:
+        print(f"[call] server returned agent_session_id={returned_session_id!r}")
+    return response_id, returned_session_id, completed_text, consent_payload
 
 
 def extract_consent_url(payload: dict) -> str | None:
@@ -194,7 +236,11 @@ def main() -> int:
 
     token = acquire_user_token()
 
-    response_id, completed, consent = call_agent(token, PROMPT, previous_response_id=None)
+    # Call #1: if AGENT_PROJECT_ID is set, bind explicitly; otherwise let the
+    # platform create a fresh sandbox and report its id back.
+    response_id, session_id, completed, consent = call_agent(
+        token, PROMPT, previous_response_id=None, agent_session_id=PROJECT_ID
+    )
 
     if consent:
         url = extract_consent_url(consent)
@@ -208,8 +254,13 @@ def main() -> int:
             print(f"\n[consent] consent payload received but no URL extracted:\n{json.dumps(consent, indent=2)}")
         input("\n[consent] press Enter once you have consented... ")
         time.sleep(1)
-        response_id, completed, consent = call_agent(
-            token, PROMPT, previous_response_id=response_id
+        # Call #2: reuse whatever session id the platform reported (or our
+        # explicit override), and thread the conversation via previous_response_id.
+        response_id, session_id, completed, consent = call_agent(
+            token,
+            PROMPT,
+            previous_response_id=response_id,
+            agent_session_id=session_id,
         )
 
     print("\n" + "=" * 60)
