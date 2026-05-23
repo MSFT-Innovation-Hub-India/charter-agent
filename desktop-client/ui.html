@@ -110,11 +110,44 @@
   .progress-fill { height: 100%; background: var(--submitted); transition: width 0.4s; }
   .progress-pct { font-weight: 600; min-width: 42px; text-align: right; }
   .progress-meta { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
-  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-top: 8px; }
-  .tile { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: var(--panel); }
-  .tile .name { font-weight: 600; font-size: 13px; }
-  .tile .role { font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
-  .tile .section { font-size: 12.5px; margin-bottom: 4px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 8px; }
+  .tile {
+    border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+    background: var(--panel); display: flex; flex-direction: column; gap: 8px;
+  }
+  .tile-head { display: flex; align-items: center; gap: 10px; }
+  .avatar {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--line-soft); color: var(--muted);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; flex-shrink: 0;
+  }
+  .tile-id { flex: 1; min-width: 0; }
+  .tile-id .name { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile-id .role { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile .section { font-size: 12.5px; line-height: 1.3; }
+  .tile .signal { font-size: 11.5px; color: var(--muted); font-style: italic; }
+  .section-label {
+    font-size: 11px; color: var(--muted); letter-spacing: 0.04em;
+    text-transform: uppercase; margin: 0 0 8px 2px;
+  }
+  .section-label .hint { text-transform: none; letter-spacing: 0; color: var(--muted); font-weight: 400; }
+  .proposal-card {
+    background: var(--line-soft); border-radius: 8px; padding: 14px 16px; margin-top: 18px;
+  }
+  .proposal-head { display: flex; align-items: center; justify-content: space-between; }
+  .proposal-title { font-size: 14px; font-weight: 600; }
+  .proposal-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .proposal-pct { font-size: 22px; font-weight: 500; color: var(--muted); }
+  .proposal-bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+  .proposal-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.4s; }
+  .activity-stream {
+    background: var(--line-soft); border-radius: 8px; padding: 8px 10px;
+    max-height: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+  }
+  .stream-item { font-size: 12.5px; line-height: 1.35; }
+  .stream-item .body { color: var(--ink); }
+  .stream-item .foot { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .pill {
     display: inline-block; padding: 2px 7px; border-radius: 999px;
     font-size: 11px; font-weight: 600; color: white;
@@ -551,6 +584,43 @@ function addLogLine(kind, name, detail) {
   logsList.scrollTop = logsList.scrollHeight;
 }
 
+// ---- Logs tab: render the agent's audit trail from activity.json ----
+// This is the agent's own product audit log (`$HOME/activity.json` written
+// by `observability.log_activity`). It survives client restarts; the bridge
+// reads it from disk and pushes the tail via `view.update` events.
+
+function fmtAuditTime(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso.slice(11, 19);
+    return d.toLocaleTimeString([], { hour12: false }) + " " + d.toLocaleDateString();
+  } catch { return iso; }
+}
+
+function renderActivityLog(rows) {
+  if (!Array.isArray(rows)) return;
+  _lastActivity = rows;
+  logsList.innerHTML = "";
+  if (!rows.length) {
+    logsList.innerHTML = `<div class="activity-empty">No audit entries yet — the agent appends to activity.json as work happens.</div>`;
+    return;
+  }
+  for (const r of rows) {
+    const node = document.createElement("div");
+    const kindClass = (r.kind || "").includes("error") ? "err" : "tool";
+    node.className = `log-line ${kindClass}`;
+    node.innerHTML =
+      `<span class="ts">${escapeHtml(fmtAuditTime(r.at))}</span>` +
+      `<span class="name">${escapeHtml(r.kind || "")}</span>` +
+      ` <span style="color:var(--muted)">${escapeHtml(r.actor || "")}</span>` +
+      (r.summary ? ` — ${escapeHtml(r.summary)}` : "") +
+      (r.ref ? ` <span style="color:var(--muted)">(${escapeHtml(r.ref)})</span>` : "");
+    logsList.appendChild(node);
+  }
+  logsList.scrollTop = logsList.scrollHeight;
+}
+
 // Map raw tool names → short human labels for business users.
 // In-process tools are listed explicitly; Toolbox tools fall back to a
 // service-derived label like "Mail · search_messages".
@@ -608,7 +678,63 @@ function addActivity(name) {
   const ticker = setInterval(() => {
     dur.textContent = `${((performance.now() - startedAt) / 1000).toFixed(1)}s`;
   }, 100);
-  return { node, startedAt, ticker };
+  return { node, startedAt, ticker, name };
+}
+
+// Pick a couple of human-meaningful key/value pairs from a tool-args JSON
+// blob so the activity row tells the user *what* the agent is doing, not just
+// which method. Falls back to the first 80 chars of any plain string.
+const ARG_PRIORITY = [
+  "subject", "title", "to", "recipient", "recipient_upn", "recipients",
+  "owner_upn", "owner", "owner_display_name",
+  "task_id", "section",
+  "path", "file", "name",
+  "channel", "kind", "status",
+  "query", "q", "message",
+];
+
+function shorten(v, max = 90) {
+  if (v == null) return "";
+  let s = typeof v === "string" ? v : JSON.stringify(v);
+  s = s.replace(/\s+/g, " ").trim();
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+function formatToolContext(argsString) {
+  if (!argsString) return "";
+  let obj;
+  try { obj = JSON.parse(argsString); } catch { return shorten(argsString); }
+  if (obj == null || typeof obj !== "object") return shorten(argsString);
+  const parts = [];
+  for (const k of ARG_PRIORITY) {
+    if (k in obj && obj[k] !== "" && obj[k] !== null && obj[k] !== undefined) {
+      const v = Array.isArray(obj[k]) ? obj[k].join(", ") : obj[k];
+      parts.push(`<b>${escapeHtml(k)}:</b> ${escapeHtml(shorten(v))}`);
+      if (parts.length >= 2) break;
+    }
+  }
+  if (!parts.length) {
+    // Fall back to whatever the first scalar key is.
+    for (const [k, v] of Object.entries(obj)) {
+      if (v == null || typeof v === "object") continue;
+      parts.push(`<b>${escapeHtml(k)}:</b> ${escapeHtml(shorten(v))}`);
+      break;
+    }
+  }
+  return parts.join(" &nbsp;·&nbsp; ");
+}
+
+function decorateActiveTool(argsString) {
+  if (!activeTool || !activeTool.node) return;
+  const ctx = formatToolContext(argsString);
+  if (!ctx) return;
+  let argsEl = activeTool.node.querySelector(".args");
+  if (!argsEl) {
+    argsEl = document.createElement("div");
+    argsEl.className = "args";
+    activeTool.node.appendChild(argsEl);
+  }
+  argsEl.innerHTML = ctx;
 }
 
 function finishActiveTool(state) {
@@ -634,50 +760,126 @@ function setEndpoint(mode, url) {
   modeSelect.value = mode;
 }
 
+// Activity entries are loaded by the bridge from `<HOME>/activity.json` and
+// pushed via `view.update` events. Cached so renderDashboard can paint the
+// stream into its right column even when the agent only sends a fresh
+// dashboard payload (e.g. on turn.complete).
+let _lastActivity = [];
+
+function initials(name) {
+  if (!name) return "?";
+  const parts = String(name).trim().split(/\s+/).slice(0, 2);
+  return parts.map(p => p[0] || "").join("").toUpperCase() || "?";
+}
+
+function fmtStreamTime(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    const today = new Date();
+    const same = d.toDateString() === today.toDateString();
+    const t = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    return same ? `Today, ${t}` : `${d.toLocaleDateString()} ${t}`;
+  } catch { return iso; }
+}
+
+const STATUS_LABEL = {
+  assigned: "Assigned",
+  inprogress: "In progress",
+  in_progress: "In progress",
+  atrisk: "At risk",
+  overdue: "At risk",
+  submitted: "Submitted",
+  submitted_with_gaps: "Submitted (gaps)",
+  reconcile: "Reconcile",
+  kicked_off: "Kicked off",
+  closed: "Closed",
+};
+
 function renderDashboard(d) {
   if (!d) { return; }
   const sections = Array.isArray(d.sections) ? d.sections : [];
   const exceptions = Array.isArray(d.exceptions) ? d.exceptions : [];
   const prog = d.progress || { submitted: 0, total: sections.length || 0 };
   const pct = prog.total ? Math.round(100 * (prog.submitted || 0) / prog.total) : 0;
+  const headerStatus = d.status || "kicked_off";
 
-  const tiles = sections.map(s => `
-    <div class="tile">
-      <div class="name">${escapeHtml(s.title || s.task_id || "—")}</div>
-      <div class="role">${escapeHtml(s.owner || "")}</div>
-      <span class="pill ${escapeHtml(s.status || "assigned")}">${escapeHtml(s.status || "assigned")}</span>
-      <div class="section" style="margin-top:6px;">${escapeHtml(s.last_signal || s.due_at || "")}</div>
-    </div>`).join("");
+  const tiles = sections.map(s => {
+    const st = s.status || "assigned";
+    const label = STATUS_LABEL[st] || st;
+    return `
+      <div class="tile">
+        <div class="tile-head">
+          <div class="avatar">${escapeHtml(initials(s.owner || s.task_id))}</div>
+          <div class="tile-id">
+            <div class="name">${escapeHtml(s.owner || "—")}</div>
+            <div class="role">${escapeHtml(s.task_id || "")}</div>
+          </div>
+        </div>
+        <div class="section">${escapeHtml(s.title || "—")}</div>
+        <div><span class="pill ${escapeHtml(st)}">${escapeHtml(label)}</span></div>
+        ${s.last_signal ? `<div class="signal">${escapeHtml(s.last_signal)}</div>` : ""}
+      </div>`;
+  }).join("");
 
   const exceptionsHtml = exceptions.length
     ? exceptions.map(e => `<div class="exception ${escapeHtml(e.kind || "")}"><b>${escapeHtml(e.title || "")}</b><br/>${escapeHtml(e.body || "")}</div>`).join("")
-    : `<div class="dash-empty" style="padding:0;">No exceptions.</div>`;
+    : `<div class="dash-empty" style="padding:0;">Nothing needs you right now.</div>`;
+
+  // Stream: newest first; show last 20 in the dashboard panel.
+  const streamRows = (_lastActivity || []).slice(-20).reverse();
+  const streamHtml = streamRows.length
+    ? streamRows.map(r => `
+        <div class="stream-item">
+          <div class="body">${escapeHtml(r.summary || r.kind || "")}</div>
+          <div class="foot">${escapeHtml(fmtStreamTime(r.at))} · ${escapeHtml(r.actor || "")}</div>
+        </div>`).join("")
+    : `<div class="dash-empty" style="padding:0;">No activity yet.</div>`;
 
   const deliverableHtml = d.deliverable_url
     ? `<a class="deliverable-link" href="${escapeHtml(d.deliverable_url)}" target="_blank" rel="noopener">Open the consolidated deliverable →</a>`
     : "";
 
+  const proposalTitle = prog.submitted > 0
+    ? `Consolidating ${prog.submitted} of ${prog.total} sections`
+    : "Awaiting first submission";
+  const proposalMeta = prog.submitted > 0
+    ? "Sections are being assembled as drafts arrive"
+    : "Sections will be assembled as drafts arrive";
+  const dueLine = d.due ? `Due ${escapeHtml(d.due)}` : "";
+
   dashboard.innerHTML = `
     <div class="dash-head">
       <div>
         <div class="dash-title">${escapeHtml(d.project || d.customer || "Project")}${d.customer && d.project ? ` — ${escapeHtml(d.customer)}` : ""}</div>
-        <div class="dash-sub">${escapeHtml(d.summary || "")}</div>
+        <div class="dash-sub">${escapeHtml(STATUS_LABEL[headerStatus] || headerStatus)}${dueLine ? ` · ${dueLine}` : ""}</div>
       </div>
-      <span class="pill ${escapeHtml(d.status || "kicked_off")}">${escapeHtml(d.status || "kicked_off")}</span>
+      <span class="pill ${escapeHtml(headerStatus)}">${escapeHtml(STATUS_LABEL[headerStatus] || headerStatus)}</span>
     </div>
     <div class="dash-row">
       <div>
-        <div class="progress-line">
-          <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
-          <div class="progress-pct">${pct}%</div>
-        </div>
-        <div class="progress-meta"><span>${prog.submitted || 0} of ${prog.total || 0} sections submitted</span><span>${escapeHtml(d.due || "")}</span></div>
-        ${deliverableHtml}
+        <div class="section-label">Section owners <span class="hint">· one tile per charter section</span></div>
         <div class="tiles">${tiles || '<div class="dash-empty" style="padding:0;">No sections yet.</div>'}</div>
+
+        <div class="proposal-card">
+          <div class="proposal-head">
+            <div>
+              <div class="proposal-title">${escapeHtml(proposalTitle)}</div>
+              <div class="proposal-meta">${escapeHtml(proposalMeta)}</div>
+            </div>
+            <div class="proposal-pct">${pct}%</div>
+          </div>
+          <div class="proposal-bar"><div class="proposal-fill" style="width:${pct}%"></div></div>
+          ${deliverableHtml ? `<div style="margin-top:8px;">${deliverableHtml}</div>` : ""}
+        </div>
       </div>
       <div>
-        <div class="dash-sub" style="margin-bottom:4px;">Exceptions</div>
-        <div class="exceptions">${exceptionsHtml}</div>
+        <div class="section-label">Exceptions</div>
+        <div class="exceptions" style="margin-bottom:18px;">${exceptionsHtml}</div>
+
+        <div class="section-label">Activity stream <span class="hint">· most recent first</span></div>
+        <div class="activity-stream">${streamHtml}</div>
       </div>
     </div>`;
 }
@@ -734,17 +936,18 @@ window.onAgentEvent = function (msg) {
     case "session.update":
       setSession(p.session_id);
       setServicePill(svcFoundry, "warm");
-      addLogLine("text", "session", p.session_id || "");
       break;
     case "tool.call":
       finishActiveTool("done");
       activeTool = addActivity(p.name);
       markServiceForTool(p.name);
       renderPhaseCard(p.name);
-      addLogLine("tool", p.name || "?", "");
       if (currentAgentMsg && currentAgentMsg.classList.contains("thinking")) {
         currentAgentMsg.setAttribute("data-thinking-label", humanizeTool(p.name) + "…");
       }
+      break;
+    case "tool.args":
+      decorateActiveTool(p.args);
       break;
     case "text.delta":
       finishActiveTool("done");
@@ -768,7 +971,6 @@ window.onAgentEvent = function (msg) {
       }
       if (p.dashboard) renderDashboard(p.dashboard);
       if (p.session_id) setSession(p.session_id);
-      addLogLine("text", "turn.complete", p.response_id ? `response=${p.response_id}` : "");
       shownPhaseCards.clear();
       setBusy(false);
       stopBusy();
@@ -784,17 +986,21 @@ window.onAgentEvent = function (msg) {
       } else {
         addMsg("error", "system", p.error || "unknown");
       }
-      addLogLine("err", "turn.error", p.error || "");
       shownPhaseCards.clear();
       setBusy(false);
       stopBusy();
       break;
     case "consent.required":
       addMsg("system", "consent", `Opening consent URL in browser: ${p.url}\nAfter you grant consent, the turn will retry automatically.`);
-      addLogLine("err", "consent.required", p.url || "");
       break;
     case "projects.update":
       renderProjects(p);
+      break;
+    case "view.update":
+      // Activity first so the cache is fresh before the dashboard paints
+      // its right-column stream.
+      if (p.activity) renderActivityLog(p.activity);
+      if (p.dashboard) renderDashboard(p.dashboard);
       break;
   }
 };
@@ -908,7 +1114,13 @@ function loadActiveProjectView(payload) {
   // message resumes (or starts) that project's Foundry session.
   clearTranscript();
   clearActivity();
-  dashboard.innerHTML = `<div class="dash-empty">Switched to <b>${(payload && payload.list && (payload.list.find(p => p.id === payload.active) || {}).label) || "project"}</b>. Ask "show me where we are" to get the latest digest, or use a quick-action.</div>`;
+  const view = payload && payload.view;
+  if (view && view.activity) renderActivityLog(view.activity);
+  if (view && view.dashboard) {
+    renderDashboard(view.dashboard);
+  } else {
+    dashboard.innerHTML = `<div class="dash-empty">Switched to <b>${(payload && payload.list && (payload.list.find(p => p.id === payload.active) || {}).label) || "project"}</b>. Ask "show me where we are" to get the latest digest, or use a quick-action.</div>`;
+  }
   setSession((payload && payload.session_id) || null);
 }
 
@@ -954,6 +1166,10 @@ window.addEventListener("pywebviewready", async () => {
   if (ctx && ctx.session_id) setSession(ctx.session_id);
   if (ctx && ctx.user_name) setUser(ctx.user_name);
   if (ctx && ctx.projects) renderProjects(ctx.projects);
+  if (ctx && ctx.view) {
+    if (ctx.view.activity) renderActivityLog(ctx.view.activity);
+    if (ctx.view.dashboard) renderDashboard(ctx.view.dashboard);
+  }
   if (ctx) {
     setEndpoint(ctx.mode, ctx.agent_url);
     // Disable dropdown options whose endpoint isn't configured.

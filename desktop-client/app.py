@@ -94,6 +94,18 @@ HTTP_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 
 UI_HTML = pathlib.Path(__file__).with_name("ui.html")
 
+# In local dev the agent's sandbox $HOME is a sibling directory:
+#   <repo>/agent/.charter-agent-home/
+#       projects/<pid>/project_log.json   (per-project state, source of truth)
+#       activity.json                     (global agent audit log; NDJSON)
+# The client reads these directly to restore the dashboard on project switch /
+# app launch without spending a model turn. In hosted mode `AGENT_HOME` can be
+# overridden via env to a mounted location.
+_AGENT_HOME = pathlib.Path(
+    os.environ.get("AGENT_HOME")
+    or (pathlib.Path(__file__).resolve().parent.parent / "agent" / ".charter-agent-home")
+)
+
 AUTH_CACHE_NAME = "charter-agent-desktop"
 _APP_HOME = pathlib.Path.home() / ".charter-agent"
 _AUTH_RECORD_PATH = _APP_HOME / "auth_records" / f"{AUTH_CACHE_NAME}.json"
@@ -269,6 +281,108 @@ def _save_projects(data: dict[str, Any]) -> None:
     tmp.replace(_PROJECTS_PATH)
 
 
+# ---------- agent-sandbox readers (state-from-disk; no model turn) ----------
+
+def _read_project_log(pid: str) -> dict[str, Any] | None:
+    """Read `<AGENT_HOME>/projects/<pid>/project_log.json` from disk."""
+    p = _AGENT_HOME / "projects" / pid / "project_log.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _dashboard_from_log(log: dict[str, Any]) -> dict[str, Any]:
+    """Mirror of `dashboard_payload` tool: derive UI dashboard from project_log.
+
+    Kept here so the client can repaint without a model turn. The shape must
+    match what the agent's `dashboard_payload()` tool returns — see
+    `agent/src/charter_agent/skills/sow_response/tools.py`.
+    """
+    tasks = log.get("tasks", [])
+    submitted_states = {"submitted", "submitted_with_gaps"}
+    section_status_map = {"in_progress": "inprogress", "overdue": "atrisk"}
+    sections: list[dict[str, Any]] = []
+    earliest_unmet_due: str | None = None
+    exceptions: list[dict[str, Any]] = []
+    for t in tasks:
+        raw = t.get("status", "assigned")
+        ui_status = section_status_map.get(raw, raw)
+        last_signal = "awaiting reply"
+        subs = t.get("submissions", [])
+        if subs:
+            last_signal = subs[-1].get("summary") or "reply received"
+        elif (t.get("kickoff_sent") or {}).get("at"):
+            last_signal = f"kicked off via {t['kickoff_sent']['channel']}"
+        sections.append({
+            "task_id": t.get("task_id"),
+            "title": t.get("title"),
+            "owner": t.get("owner_display_name") or t.get("owner_upn"),
+            "status": ui_status,
+            "due_at": t.get("due_at") or "",
+            "last_signal": last_signal,
+        })
+        if raw not in submitted_states and t.get("due_at"):
+            if earliest_unmet_due is None or t["due_at"] < earliest_unmet_due:
+                earliest_unmet_due = t["due_at"]
+        if raw == "overdue":
+            exceptions.append({
+                "kind": "atrisk",
+                "title": t.get("task_id"),
+                "body": f"{t.get('owner_display_name', t.get('owner_upn'))} is past due.",
+            })
+    order = (log.get("consolidation_rules") or {}).get("section_order") or []
+    if order:
+        idx = {tid: i for i, tid in enumerate(order)}
+        sections.sort(key=lambda s: idx.get(s["task_id"], len(idx)))
+    submitted = sum(1 for t in tasks if t.get("status") in submitted_states)
+    return {
+        "kind": "dashboard",
+        "project": log.get("project_id"),
+        "customer": log.get("customer_name"),
+        "status": log.get("status"),
+        "summary": "",
+        "due": earliest_unmet_due or "",
+        "progress": {"submitted": submitted, "total": len(tasks)},
+        "sections": sections,
+        "exceptions": exceptions,
+        "deliverable_url": (log.get("deliverable") or {}).get("url", ""),
+    }
+
+
+def _read_activity_tail(limit: int = 200) -> list[dict[str, Any]]:
+    """Return the last `limit` rows from `<AGENT_HOME>/activity.json` (NDJSON)."""
+    p = _AGENT_HOME / "activity.json"
+    if not p.exists():
+        return []
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()[-limit:]
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+def _project_view(pid: str) -> dict[str, Any]:
+    """Build the disk-derived view for a project (dashboard + recent audit)."""
+    log = _read_project_log(pid)
+    return {
+        "project_id": pid,
+        "dashboard": _dashboard_from_log(log) if log else None,
+        "activity": _read_activity_tail(200),
+    }
+
+
 class Bridge:
     """JS-callable surface exposed to the WebView via pywebview's js_api."""
 
@@ -352,9 +466,18 @@ class Bridge:
             "scope": SCOPE,
             "user_name": self.user_name,
             "projects": self._projects_payload(),
+            "view": _project_view(self.project_id),
         }
 
     # ---------- projects API ----------
+
+    def project_view(self, project_id: str = "") -> dict:
+        """Reload the disk-derived view (dashboard + activity) for a project.
+
+        Used by the UI to restore state on switch / boot without a model turn.
+        """
+        pid = project_id or self.project_id
+        return {"ok": True, **_project_view(pid)}
 
     def _projects_payload(self) -> dict[str, Any]:
         ordered = sorted(
@@ -392,7 +515,7 @@ class Bridge:
         }
         self._projects_data["active"] = pid
         _save_projects(self._projects_data)
-        return {"ok": True, "active": pid, **self._projects_payload()}
+        return {"ok": True, "active": pid, "view": _project_view(pid), **self._projects_payload()}
 
     def switch_project(self, project_id: str) -> dict:
         if project_id not in self._projects_data["projects"]:
@@ -405,6 +528,7 @@ class Bridge:
             "active": project_id,
             "session_id": self.session_id,
             "previous_response_id": self.previous_response_id,
+            "view": _project_view(project_id),
             **self._projects_payload(),
         }
 
@@ -609,6 +733,7 @@ class Bridge:
                     if etype == "response.function_call_arguments.done":
                         if current_tool is not None:
                             current_tool["args"] = str(data.get("arguments") or current_tool["args"])
+                            self._emit("tool.args", {"name": current_tool["name"], "args": current_tool["args"]})
                         continue
 
                     if etype == "response.output_text.delta":
@@ -671,6 +796,9 @@ class Bridge:
             "text": final_text,
             "dashboard": dashboard,
         })
+        # Refresh the disk-derived view (activity audit + canonical dashboard
+        # from project_log.json) so the UI matches the agent's source of truth.
+        self._emit("view.update", _project_view(self.project_id))
 
 
 def main() -> int:
