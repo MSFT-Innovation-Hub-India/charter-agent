@@ -1,4 +1,5 @@
-"""Sole owner of the warm `FoundryChatClient` and the Foundry Toolbox MCP tool.
+"""Sole owner of the warm `FoundryChatClient`, the Foundry Toolbox MCP tool,
+and one warm MAF `Agent` per loaded skill bundle.
 
 Mirrors the canonical hosted-agent sample
 `microsoft-foundry/foundry-samples/.../responses/04-foundry-toolbox/main.py`:
@@ -8,15 +9,14 @@ the Toolbox is attached as a raw `MCPStreamableHTTPTool` backed by an
 mandatory `Foundry-Features: Toolboxes=V1Preview` header is set on the
 client's default headers so it ships with every request (including the
 initial MCP `initialize` / `tools/list`, which `header_provider` does not
-cover). `get_mcp_tool(...)` is not used because it cannot mint per-call
-bearers — the Toolbox URL sits behind APIM and returns 401 without one.
+cover).
 
-Auth:
-- `FoundryChatClient` uses `DefaultAzureCredential` for its outbound calls
-  to the Foundry project (the hosted agent's identity — project MI before
-  publish, agent MI after; the developer's `az login` identity locally).
-- The Toolbox MCP tool uses the same credential via
-  `get_bearer_token_provider`.
+Per-bundle Agents: at boot we call `skill_loader.load_bundles()` and
+construct one warm `Agent` per skill, attaching its `inprocess_tools` plus a
+toolbox handle. When the bundle declares a literal `toolbox_allowlist` we
+build a per-skill `MCPStreamableHTTPTool` with `allowed_tools=` set so the
+toolbox surface is filtered at the MCP layer; otherwise we reuse the shared
+unrestricted `_mcp_tool`.
 
 Enforced by `import-linter`: this module is the only place allowed to import
 from `agent_framework` / `agent_framework_foundry`.
@@ -29,12 +29,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from ..state import home_dir
+from . import skill_loader
+from .state_tools import STATE_TOOLS
 
 _chat_client: Any | None = None
 _mcp_tool: Any | None = None
 _credential: Any | None = None
+_http_client: Any | None = None
+_token_provider: Any | None = None
+_toolbox_url: str | None = None
+_toolbox_name: str | None = None
 _sessions: dict[str, Any] = {}
+_agents: dict[str, Any] = {}
 
 
 @dataclass(frozen=True)
@@ -71,11 +80,9 @@ def _build_toolbox_url(cfg: HostConfig) -> str:
     return f"{base}/toolboxes/{cfg.toolbox_name}/mcp?api-version=v1"
 
 
-
-import httpx
-
 class _ToolboxAuth(httpx.Auth):
     """httpx.Auth that mints a fresh Foundry bearer on every request (async)."""
+
     def __init__(self, token_provider: Any) -> None:
         self._get_token = token_provider
 
@@ -84,38 +91,66 @@ class _ToolboxAuth(httpx.Auth):
         yield request
 
 
+def _make_mcp_tool(allowlist: tuple[str, ...] | None) -> Any:
+    """Build an `MCPStreamableHTTPTool` sharing the warm http_client + URL."""
+    from agent_framework import MCPStreamableHTTPTool  # type: ignore[import-not-found]
+
+    kwargs: dict[str, Any] = {
+        "name": _toolbox_name,
+        "url": _toolbox_url,
+        "http_client": _http_client,
+        "load_prompts": False,
+    }
+    if allowlist:
+        kwargs["allowed_tools"] = list(allowlist)
+    return MCPStreamableHTTPTool(**kwargs)
+
+
+def _build_agent(bundle: skill_loader.SkillBundle) -> Any:
+    """Construct a warm `Agent` for a bundle with the right tool surface."""
+    from agent_framework import Agent  # type: ignore[import-not-found]
+
+    if bundle.toolbox_allowlist:
+        toolbox = _make_mcp_tool(bundle.toolbox_allowlist)
+    else:
+        toolbox = _mcp_tool  # shared unrestricted
+
+    return Agent(
+        client=_chat_client,
+        instructions=bundle.manifest.body,
+        tools=[toolbox, *bundle.inprocess_tools],
+        default_options={"store": False},
+    )
+
+
 def bootstrap() -> None:
-    """Instantiate the warm `FoundryChatClient` and the Toolbox MCP tool. Idempotent."""
-    global _chat_client, _mcp_tool, _credential
+    """Instantiate the warm `FoundryChatClient`, the Toolbox MCP tool, and one
+    warm `Agent` per loaded skill bundle. Idempotent."""
+    global _chat_client, _mcp_tool, _credential, _http_client, _token_provider
+    global _toolbox_url, _toolbox_name
     if _chat_client is not None:
         return
 
     cfg = _read_config()
 
-    import httpx
-
-    from agent_framework import MCPStreamableHTTPTool  # type: ignore[import-not-found]
     from agent_framework_foundry import FoundryChatClient  # type: ignore[import-not-found]
     from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 
     _credential = DefaultAzureCredential()
-
-    token_provider = get_bearer_token_provider(
+    _token_provider = get_bearer_token_provider(
         _credential, "https://ai.azure.com/.default"
     )
 
-    http_client = httpx.AsyncClient(
-        auth=_ToolboxAuth(token_provider),
+    _toolbox_url = _build_toolbox_url(cfg)
+    _toolbox_name = cfg.toolbox_name
+
+    _http_client = httpx.AsyncClient(
+        auth=_ToolboxAuth(_token_provider),
         headers={"Foundry-Features": "Toolboxes=V1Preview"},
         timeout=120.0,
     )
 
-    _mcp_tool = MCPStreamableHTTPTool(
-        name=cfg.toolbox_name,
-        url=_build_toolbox_url(cfg),
-        http_client=http_client,
-        load_prompts=False,
-    )
+    _mcp_tool = _make_mcp_tool(None)
 
     _chat_client = FoundryChatClient(
         project_endpoint=cfg.project_endpoint,
@@ -124,6 +159,13 @@ def bootstrap() -> None:
     )
 
     (home_dir() / "agent_session").mkdir(parents=True, exist_ok=True)
+
+    # Register shared in-process tools, then build one warm Agent per bundle.
+    skill_loader.register_tools(list(STATE_TOOLS))
+    bundles = skill_loader.load_bundles()
+    _agents.clear()
+    for name, bundle in bundles.items():
+        _agents[name] = _build_agent(bundle)
 
 
 def get_chat_agent() -> Any:
@@ -134,10 +176,23 @@ def get_chat_agent() -> Any:
 
 
 def get_toolbox() -> Any:
-    """Return the hosted MCP tool spec for the WorkIQ Toolbox."""
+    """Return the shared unrestricted Toolbox MCP tool."""
     if _mcp_tool is None:
         raise RuntimeError("foundry_host.bootstrap() must be called first.")
     return _mcp_tool
+
+
+def get_agent(skill_name: str) -> Any:
+    """Return the warm `Agent` built for `skill_name`."""
+    if not _agents:
+        raise RuntimeError("foundry_host.bootstrap() must be called first.")
+    try:
+        return _agents[skill_name]
+    except KeyError as e:
+        raise KeyError(
+            f"foundry_host: no agent for skill {skill_name!r} "
+            f"(have {list(_agents)})"
+        ) from e
 
 
 def get_session(session_id: str) -> Any:
@@ -165,27 +220,13 @@ def session_path(session_id: str) -> Path:
 
 async def run_skill(
     *,
-    skill_body: str,
     user_prompt: str,
+    skill_name: str = "sow-response",
     session_id: str | None = None,
 ) -> Any:
-    """Run a one-shot host-Agent turn using `skill_body` as instructions, with
-    the hosted Toolbox MCP tool + agent-side state tools attached.
+    """Run a one-shot turn against the warm Agent for `skill_name`.
 
     Used by smoke scripts. The production path is `responses_host.start()`,
-    which constructs the agent once at boot.
+    which fetches the same warm Agent via `get_agent(...)`.
     """
-    if _chat_client is None or _mcp_tool is None:
-        raise RuntimeError("foundry_host.bootstrap() must be called first.")
-
-    from agent_framework import Agent  # type: ignore[import-not-found]
-
-    from .state_tools import STATE_TOOLS
-
-    agent = Agent(
-        client=_chat_client,
-        instructions=skill_body,
-        tools=[_mcp_tool, *STATE_TOOLS],
-        default_options={"store": False},
-    )
-    return await agent.run(user_prompt)
+    return await get_agent(skill_name).run(user_prompt)

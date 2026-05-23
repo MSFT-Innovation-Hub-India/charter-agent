@@ -78,15 +78,19 @@ def state_read_json(path: str) -> dict[str, Any]:
 
 
 @tool
-def state_list_files(path: str = ".") -> list[str]:
+def state_list_files(path: str = ".", recursive: bool = False) -> list[str]:
     """List file paths (relative to `$HOME`) under the given directory.
 
-    Returns an empty list if the directory does not exist.
+    Returns an empty list if the directory does not exist. Output is capped at
+    500 entries; if the cap is hit, the last list element is a sentinel string
+    starting with "…<truncated". Pass a narrower `path` to drill in further.
 
     Args:
         path: Relative directory path under `$HOME`. Defaults to the root.
+        recursive: If True, walks subdirectories. Default False — only the
+            immediate children of `path` are returned.
     """
-    return state.list_files(path)
+    return state.list_files(path, recursive=recursive)
 
 
 @tool

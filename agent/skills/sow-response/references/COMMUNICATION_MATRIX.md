@@ -1,45 +1,28 @@
-# Communication matrix — SOW Response
+# Drafting kickoffs and nudges — tone
 
-How to decide each collaborator's `communication_modes` entry in the Charter.
+Channel and audience choices are handled by `commit_charter` (sets each task's `communication_modes` from the `is_external` flag). This file is just the voice-and-shape guidance for the messages themselves.
 
-The single signal you need: **is the collaborator's email domain the same as the SOW Owner's, or different?**
+## Internal nudge over Teams
 
-## Same domain (internal collaborator)
+Conversational, one sentence, no signature.
 
-Same Microsoft Entra tenant. All M365 surfaces are available.
+> *"Hey — just checking on the technical scope section, due EOD today. Anything blocking?"*
 
-```jsonc
-{
-  "preferred": "teams_message",
-  "allowed": ["teams_message", "email"],
-  "document_sharing": ["onedrive", "sharepoint", "email", "teams_message"],
-  "is_external": false
-}
-```
+## Internal nudge over email
 
-Why `teams_message` preferred: internal collaborators respond faster to a 1:1 Teams ping than to email. The SOW Owner can override per-collaborator at ratification.
+Two short paragraphs. Polite, name the section, name the deadline, offer help.
 
-## Different domain (external collaborator)
+> *"Hi — touching base on the technical scope section for the Contoso SOW (due EOD today). Happy to jump on a quick call if anything's blocked. Thanks!"*
 
-External partner / customer SME / contractor. **Cross-tenant Teams and SharePoint sharing are not available for the demo cohort.** Email is the only viable surface for both messaging and document sharing.
+## External nudge over email
 
-```jsonc
-{
-  "preferred": "email",
-  "allowed": ["email"],
-  "document_sharing": ["email"],
-  "is_external": true
-}
-```
+Three short paragraphs, more formal. Restate the RFP context, name the section, name the deadline, sign off with the SOW Owner's full name and title.
 
-If a future cohort enables cross-tenant collaboration via guest invites or B2B sharing, this file gets updated — no code change required.
+Default subject: *"&lt;Customer&gt; SOW — &lt;section title&gt; — quick follow-up"*.
 
-## Tone guidance for nudges
+## Rules that apply to every channel
 
-When the SOW Owner approves a `nudge_owner` `SuggestedAction`, the `draft-outbound` skill writes the body. For SOW specifically:
-
-- **Internal nudge over Teams.** Conversational, single sentence, no signature: *"Hey — just checking on the technical scope section, due EOD today. Anything blocking?"*
-- **Internal nudge over email.** Two short paragraphs, polite, name the section, name the deadline, offer help: *"Hi — touching base on the technical scope section for the Contoso SOW (due EOD today). Happy to jump on a quick call if anything's blocked. Thanks!"*
-- **External nudge over email.** Three short paragraphs, more formal, restate the RFP context, name the section, name the deadline, sign off with the SOW Owner's full name and title. Default subject: *"Contoso SOW — <section title> — quick follow-up"*.
-
-Never CC anyone the SOW Owner did not explicitly add. Never escalate by adding the collaborator's manager without an explicit approved `SuggestedAction` of kind `propose_reassign` or `clarify_gap`.
+- Never CC anyone the SOW Owner did not explicitly add.
+- Never escalate by looping in the collaborator's manager without explicit approval from the SOW Owner.
+- Never invent a deadline. Use the task's `due_at` verbatim (the project tools store it in ISO; render it as a short human form, e.g. "EOD Fri 30 May").
+- Kickoff messages follow the same tone, plus the runbook bullets the collaborator needs to address — one short HTML `<ul>` is enough.

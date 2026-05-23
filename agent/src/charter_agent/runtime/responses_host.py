@@ -16,8 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from . import foundry_host, skill_loader
-from .state_tools import STATE_TOOLS
+from . import foundry_host
 
 _DEFAULT_SKILL = "sow-response"
 _log = logging.getLogger(__name__)
@@ -56,25 +55,14 @@ def _build_resilient_host(agent: Any) -> Any:
 
 
 def build_main_agent(skill_name: str = _DEFAULT_SKILL) -> Any:
-    """Construct the singleton `Agent` baked with `skill_name`'s body.
+    """Return the warm per-skill Agent built by `foundry_host.bootstrap()`.
 
-    `default_options={"store": False}` because the Responses host manages
-    conversation history itself via `previous_response_id`; we don't ask the
-    upstream model to persist it.
+    The Agent is constructed once at boot from the skill's `SkillBundle`
+    (manifest body + in-process tools + filtered toolbox). The Responses
+    host owns conversation history via `previous_response_id`; the Agent
+    was built with `default_options={"store": False}` accordingly.
     """
-    from agent_framework import Agent  # type: ignore[import-not-found]
-
-    skill_loader.load_all()
-    skill = skill_loader.get(skill_name)
-    chat_client = foundry_host.get_chat_agent()
-    toolbox = foundry_host.get_toolbox()
-
-    return Agent(
-        client=chat_client,
-        instructions=skill.body,
-        tools=[toolbox, *STATE_TOOLS],
-        default_options={"store": False},
-    )
+    return foundry_host.get_agent(skill_name)
 
 
 def start(agent: Any | None = None) -> None:

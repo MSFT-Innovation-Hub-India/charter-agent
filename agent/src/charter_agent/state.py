@@ -11,18 +11,55 @@ and what's inside them. Two guarantees this module commits to:
 
 The agent-side tool wrappers that surface these functions to the model live in
 `runtime/state_tools.py`.
+
+Local-mode safety: in the Foundry hosted container, `$HOME` is set by the
+platform to a per-session sandbox directory. In local dev that env var is
+absent, and falling back to `~` would let the agent walk the developer's real
+Windows/Linux home. Instead we pin `$HOME` to `<repo>/.charter-agent-home/`
+on first access and rebind `os.environ['HOME']` so every downstream resolver
+agrees. State persists across local agent restarts, which is what you want
+for multi-turn dev.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
+_LOGGER = logging.getLogger(__name__)
+
+# Hard caps for tool outputs surfaced to the model. The OpenAI Responses API
+# rejects a single tool result string over 10 MB, and even well below that a
+# multi-MB listing wastes context and inference time. These bounds keep
+# `state_list_files` honest regardless of where `$HOME` ends up pointing.
+_LIST_MAX_ENTRIES = 500
+
+_LOCAL_HOME_PINNED = False
+
+
+def _pin_local_home() -> None:
+    """Bind `$HOME` to a project-scoped scratch dir when running outside the
+    Foundry sandbox container. Idempotent.
+    """
+    global _LOCAL_HOME_PINNED
+    if _LOCAL_HOME_PINNED or os.environ.get("HOME"):
+        return
+    # `state.py` lives at agent/src/charter_agent/state.py; agent root is 3 up.
+    repo_local_home = (Path(__file__).resolve().parents[2] / ".charter-agent-home").resolve()
+    repo_local_home.mkdir(parents=True, exist_ok=True)
+    os.environ["HOME"] = str(repo_local_home)
+    _LOCAL_HOME_PINNED = True
+    _LOGGER.warning(
+        "state: HOME not set by platform; pinned local sandbox to %s", repo_local_home
+    )
+
 
 def home_dir() -> Path:
-    return Path(os.environ.get("HOME", os.path.expanduser("~")))
+    _pin_local_home()
+    return Path(os.environ["HOME"])
 
 
 def _resolve(rel_path: str) -> Path:
@@ -97,15 +134,24 @@ def exists(rel_path: str) -> bool:
         return False
 
 
-def list_files(rel_path: str = ".") -> list[str]:
+def list_files(rel_path: str = ".", recursive: bool = False) -> list[str]:
     base = _resolve(rel_path)
     if not base.exists():
         return []
     if not base.is_dir():
         return [str(base.relative_to(home_dir().resolve()).as_posix())]
     root = home_dir().resolve()
-    return sorted(
-        str(p.resolve().relative_to(root).as_posix())
-        for p in base.rglob("*")
-        if p.is_file()
-    )
+    iterator = base.rglob("*") if recursive else base.glob("*")
+    out: list[str] = []
+    truncated = False
+    for p in iterator:
+        if not p.is_file():
+            continue
+        if len(out) >= _LIST_MAX_ENTRIES:
+            truncated = True
+            break
+        out.append(str(p.resolve().relative_to(root).as_posix()))
+    out.sort()
+    if truncated:
+        out.append(f"…<truncated at {_LIST_MAX_ENTRIES} entries; pass a narrower path or recursive=False>")
+    return out
