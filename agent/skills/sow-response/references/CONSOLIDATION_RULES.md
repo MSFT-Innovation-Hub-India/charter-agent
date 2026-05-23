@@ -10,4 +10,4 @@ When the final SOW Word document is assembled from each task's accepted submissi
 
 If the RFP mandated a specific SOW template, honour its styles, headers, footers, and section ordering. Otherwise use a clean default (1" margins, Heading 1 per section, embedded TOC). Never pre-create a template path at charter time and never share folders with external collaborators — the deliverable is assembled at consolidation time and lands in the SOW Owner's OneDrive (or emailed back for review).
 
-Per-section ordering defaults live in `commit_charter`'s `consolidation_section_order` argument; override at charter time only if the RFP demands a different structure.
+The default section order lives in `start_charter` (`executive-summary`, `technical-scope`, `pm-scope`, `commercial`, `case-studies`). If the RFP demands a different structure, that ordering is fixed when the project is created and you reconcile to it at consolidation time.

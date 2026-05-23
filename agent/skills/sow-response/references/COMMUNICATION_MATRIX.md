@@ -1,6 +1,6 @@
 # Drafting kickoffs and nudges — tone
 
-Channel and audience choices are handled by `commit_charter` (sets each task's `communication_modes` from the `is_external` flag). This file is just the voice-and-shape guidance for the messages themselves.
+Channel and audience choices are handled by `add_charter_task` (sets each task's `communication_modes` from the `is_external` flag). This file is just the voice-and-shape guidance for the messages themselves.
 
 ## Internal nudge over Teams
 

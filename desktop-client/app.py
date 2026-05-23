@@ -56,14 +56,24 @@ import time
 import webbrowser
 from typing import Any
 
-# Silence WebView2's accessibility-tree walker. On Windows the provider hits a
-# recursive AccessibilityObject.Bounds.Empty loop on shutdown that dumps a
-# multi-KB stderr stack — harmless, but noisy. Disabling the accessibility
-# provider is fine for a single-user dev tool.
-os.environ.setdefault("PYWEBVIEW_DISABLE_ACCESSIBILITY", "1")
-
 import httpx
 import webview
+
+# Silence pywebview's WinForms backend logger. On WebView2 shutdown it tries to
+# repr `window.native` for diagnostics and trips a recursive
+# AccessibilityObject.Bounds.Empty loop, dumping multi-KB stderr stacks.
+# Harmless but spammy; mute it for the desktop tool.
+for _name in ("pywebview", "webview", "pywebview.winforms"):
+    logging.getLogger(_name).setLevel(logging.CRITICAL)
+
+
+class _SuppressPywebviewRecursion(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "AccessibilityObject" not in msg and "maximum recursion depth" not in msg
+
+
+logging.getLogger().addFilter(_SuppressPywebviewRecursion())
 from azure.identity import (
     AuthenticationRecord,
     InteractiveBrowserCredential,
@@ -170,6 +180,95 @@ def _decode_jwt_name(token: str) -> str | None:
     return None
 
 
+def _load_record() -> AuthenticationRecord | None:
+    """Read the saved `AuthenticationRecord` from disk, if any."""
+    if not _AUTH_RECORD_PATH.exists():
+        return None
+    try:
+        return AuthenticationRecord.deserialize(_AUTH_RECORD_PATH.read_text(encoding="utf-8"))
+    except Exception as ex:  # noqa: BLE001
+        logger.warning("auth: failed to load record (%s); will re-prompt.", ex)
+        return None
+
+
+def _save_record(record: AuthenticationRecord) -> None:
+    """Persist the `AuthenticationRecord` so future launches are silent."""
+    _AUTH_RECORD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _AUTH_RECORD_PATH.write_text(record.serialize(), encoding="utf-8")
+
+
+def _build_credential(parent_hwnd: int = 0) -> Any:
+    """Build the interactive credential used for sign-in.
+
+    Prefers `InteractiveBrowserBrokerCredential` (Windows account picker via
+    WAM) when `azure-identity-broker` is installed; otherwise falls back to
+    `InteractiveBrowserCredential` (system browser). Both reuse a persisted
+    `AuthenticationRecord` to make repeat launches silent.
+
+    `parent_hwnd` should be the HWND of the foreground app window. WAM
+    cancels the request immediately when the handle is 0/invalid, so we
+    fall back to `GetForegroundWindow()` and then to the browser credential
+    when no usable handle is available.
+    """
+    record = _load_record()
+    cache_opts = TokenCachePersistenceOptions(name=AUTH_CACHE_NAME)
+    common: dict[str, Any] = {
+        "cache_persistence_options": cache_opts,
+        "authentication_record": record,
+    }
+    if TENANT_ID:
+        common["tenant_id"] = TENANT_ID
+
+    if _BROKER_AVAILABLE and InteractiveBrowserBrokerCredential is not None:
+        hwnd = parent_hwnd
+        if not hwnd:
+            try:
+                import ctypes
+                hwnd = int(ctypes.windll.user32.GetForegroundWindow())
+            except Exception:  # noqa: BLE001
+                hwnd = 0
+        if hwnd:
+            return InteractiveBrowserBrokerCredential(parent_window_handle=hwnd, **common)
+        logger.warning("auth: no parent HWND available; falling back to browser credential.")
+    return InteractiveBrowserCredential(**common)
+
+
+# ---- projects store ------------------------------------------------------
+#
+# Multi-project support. Each project is a separate workspace (its own
+# Foundry session, its own $HOME sandbox on the agent side). The client owns
+# the list; the agent learns which project is active via a one-line preamble
+# the client prepends to every outbound prompt.
+
+_PROJECTS_PATH = _APP_HOME / "projects.json"
+
+
+def _gen_project_id() -> str:
+    import uuid
+    return f"p-{uuid.uuid4().hex[:8]}"
+
+
+def _now_iso() -> str:
+    import datetime
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def _load_projects() -> dict[str, Any]:
+    if not _PROJECTS_PATH.exists():
+        return {"active": None, "projects": {}}
+    try:
+        return json.loads(_PROJECTS_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {"active": None, "projects": {}}
+
+
+def _save_projects(data: dict[str, Any]) -> None:
+    _PROJECTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _PROJECTS_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(_PROJECTS_PATH)
+
+
 class Bridge:
     """JS-callable surface exposed to the WebView via pywebview's js_api."""
 
@@ -180,11 +279,66 @@ class Bridge:
         self.user_name: str | None = None
         self._credential: Any = None
         self._record_saved: bool = _AUTH_RECORD_PATH.exists()
-        self.session_id: str | None = os.environ.get("AGENT_PROJECT_ID") or None
-        self.previous_response_id: str | None = None
         self.endpoints = {"local": local_url, "hosted": hosted_url}
         self.mode: str = initial_mode if initial_mode in self.endpoints else "hosted"
         self._lock = threading.Lock()
+
+        # Load projects from disk; create a starter project if empty so the
+        # UI has something to show. Each project carries its own Foundry
+        # session_id and previous_response_id so switching never crosses
+        # conversation history between RFPs.
+        data = _load_projects()
+        if not data.get("projects"):
+            seed = os.environ.get("AGENT_PROJECT_ID") or _gen_project_id()
+            data = {
+                "active": seed,
+                "projects": {
+                    seed: {
+                        "label": "New project",
+                        "customer_name": "",
+                        "session_id": None,
+                        "previous_response_id": None,
+                        "is_new": True,
+                        "created_at": _now_iso(),
+                        "last_used_at": _now_iso(),
+                    }
+                },
+            }
+            _save_projects(data)
+        elif not data.get("active") or data["active"] not in data["projects"]:
+            data["active"] = next(iter(data["projects"]))
+            _save_projects(data)
+        self._projects_data = data
+
+    # ---------- project state shortcuts ----------
+
+    @property
+    def project_id(self) -> str:
+        return self._projects_data["active"]
+
+    @property
+    def _current(self) -> dict[str, Any]:
+        return self._projects_data["projects"][self.project_id]
+
+    @property
+    def session_id(self) -> str | None:
+        return self._current.get("session_id")
+
+    @session_id.setter
+    def session_id(self, value: str | None) -> None:
+        if self._current.get("session_id") != value:
+            self._current["session_id"] = value
+            _save_projects(self._projects_data)
+
+    @property
+    def previous_response_id(self) -> str | None:
+        return self._current.get("previous_response_id")
+
+    @previous_response_id.setter
+    def previous_response_id(self, value: str | None) -> None:
+        if self._current.get("previous_response_id") != value:
+            self._current["previous_response_id"] = value
+            _save_projects(self._projects_data)
 
     # ---------- lifecycle ----------
 
@@ -197,7 +351,91 @@ class Bridge:
             "tenant_id": TENANT_ID,
             "scope": SCOPE,
             "user_name": self.user_name,
+            "projects": self._projects_payload(),
         }
+
+    # ---------- projects API ----------
+
+    def _projects_payload(self) -> dict[str, Any]:
+        ordered = sorted(
+            self._projects_data["projects"].items(),
+            key=lambda kv: kv[1].get("last_used_at") or kv[1].get("created_at") or "",
+            reverse=True,
+        )
+        return {
+            "active": self.project_id,
+            "list": [
+                {
+                    "id": pid,
+                    "label": p.get("label") or "New project",
+                    "customer_name": p.get("customer_name") or "",
+                    "is_new": bool(p.get("is_new")),
+                    "last_used_at": p.get("last_used_at") or "",
+                }
+                for pid, p in ordered
+            ],
+        }
+
+    def list_projects(self) -> dict:
+        return {"ok": True, **self._projects_payload()}
+
+    def new_project(self, label: str = "") -> dict:
+        pid = _gen_project_id()
+        self._projects_data["projects"][pid] = {
+            "label": label.strip() or "New project",
+            "customer_name": "",
+            "session_id": None,
+            "previous_response_id": None,
+            "is_new": True,
+            "created_at": _now_iso(),
+            "last_used_at": _now_iso(),
+        }
+        self._projects_data["active"] = pid
+        _save_projects(self._projects_data)
+        return {"ok": True, "active": pid, **self._projects_payload()}
+
+    def switch_project(self, project_id: str) -> dict:
+        if project_id not in self._projects_data["projects"]:
+            return {"ok": False, "error": f"unknown project_id: {project_id}"}
+        self._projects_data["active"] = project_id
+        self._current["last_used_at"] = _now_iso()
+        _save_projects(self._projects_data)
+        return {
+            "ok": True,
+            "active": project_id,
+            "session_id": self.session_id,
+            "previous_response_id": self.previous_response_id,
+            **self._projects_payload(),
+        }
+
+    def rename_project(self, project_id: str, label: str) -> dict:
+        if project_id not in self._projects_data["projects"]:
+            return {"ok": False, "error": f"unknown project_id: {project_id}"}
+        self._projects_data["projects"][project_id]["label"] = label.strip() or "New project"
+        _save_projects(self._projects_data)
+        return {"ok": True, **self._projects_payload()}
+
+    def delete_project(self, project_id: str) -> dict:
+        projects = self._projects_data["projects"]
+        if project_id not in projects:
+            return {"ok": False, "error": f"unknown project_id: {project_id}"}
+        del projects[project_id]
+        if not projects:
+            pid = _gen_project_id()
+            projects[pid] = {
+                "label": "New project",
+                "customer_name": "",
+                "session_id": None,
+                "previous_response_id": None,
+                "is_new": True,
+                "created_at": _now_iso(),
+                "last_used_at": _now_iso(),
+            }
+            self._projects_data["active"] = pid
+        elif self._projects_data["active"] == project_id:
+            self._projects_data["active"] = next(iter(projects))
+        _save_projects(self._projects_data)
+        return {"ok": True, "active": self._projects_data["active"], **self._projects_payload()}
 
     def set_mode(self, mode: str) -> dict:
         if mode not in self.endpoints:
@@ -205,14 +443,18 @@ class Bridge:
         if not self.endpoints[mode]:
             return {"ok": False, "error": f"endpoint for mode={mode!r} is not configured"}
         self.mode = mode
-        self.session_id = None
-        self.previous_response_id = None
+        # Wipe per-project session state across the board — endpoint change
+        # invalidates server-side session ids.
+        for p in self._projects_data["projects"].values():
+            p["session_id"] = None
+            p["previous_response_id"] = None
+        _save_projects(self._projects_data)
         return {"ok": True, "mode": mode, "agent_url": self.endpoints[mode]}
 
     def login(self) -> dict:
         try:
             if self._credential is None:
-                self._credential = _build_credential()
+                self._credential = _build_credential(self._parent_hwnd())
             tok = self._credential.get_token(SCOPE)
             # On the first successful sign-in, capture an AuthenticationRecord so
             # subsequent launches reuse the account silently without re-prompting.
@@ -238,9 +480,14 @@ class Bridge:
         return {"ok": True, "expires_on": int(tok.expires_on), "user_name": self.user_name}
 
     def reset_session(self) -> dict:
+        """Forget the current project's server-side session, keep the project itself.
+
+        Use this when the host endpoint or session_id has drifted; the next
+        message will land in a fresh Foundry session under the same project_id.
+        """
         self.session_id = None
         self.previous_response_id = None
-        return {"ok": True}
+        return {"ok": True, "project_id": self.project_id}
 
     # ---------- chat ----------
 
@@ -252,10 +499,38 @@ class Bridge:
             r = self.login()
             if not r.get("ok"):
                 return r
-        threading.Thread(target=self._run_turn, args=(prompt, url), daemon=True).start()
+        # Mark the project as 'used' so the host knows whether to create-or-resume.
+        pid = self.project_id
+        is_new = bool(self._current.get("is_new"))
+        if is_new:
+            self._current["is_new"] = False
+        self._current["last_used_at"] = _now_iso()
+        _save_projects(self._projects_data)
+        preamble = f"[charter-agent-context: project_id={pid} is_new={'true' if is_new else 'false'}]\n"
+        threading.Thread(target=self._run_turn, args=(prompt, preamble + prompt, url), daemon=True).start()
         return {"ok": True}
 
     # ---------- internals ----------
+
+    def _parent_hwnd(self) -> int:
+        """Return the HWND of the pywebview window for WAM anchoring.
+
+        pywebview's EdgeChromium backend exposes the host WinForms form as
+        `window.native`. Its `.Handle` attribute is the Win32 HWND. Returns
+        0 if the window is not yet realized or the backend doesn't expose
+        a handle — callers should fall back to `GetForegroundWindow()`.
+        """
+        win = self.window
+        if win is None:
+            return 0
+        native = getattr(win, "native", None)
+        if native is None:
+            return 0
+        handle = getattr(native, "Handle", None)
+        try:
+            return int(handle) if handle is not None else 0
+        except (TypeError, ValueError):
+            return 0
 
     def _emit(self, event: str, payload: dict | None = None) -> None:
         if not self.window:
@@ -266,16 +541,21 @@ class Bridge:
         except Exception as e:  # noqa: BLE001
             print(f"[bridge] evaluate_js failed: {e}", file=sys.stderr)
 
-    def _run_turn(self, prompt: str, url: str) -> None:
+    def _run_turn(self, display_prompt: str, wire_prompt: str, url: str) -> None:
         with self._lock:
-            self._emit("turn.start", {"prompt": prompt, "session_id": self.session_id, "mode": self.mode})
+            self._emit("turn.start", {"prompt": display_prompt, "session_id": self.session_id, "mode": self.mode, "project_id": self.project_id})
             try:
-                self._post_one(prompt, url=url, previous_response_id=self.previous_response_id)
+                self._post_one(wire_prompt, url=url, previous_response_id=self.previous_response_id)
             except Exception as e:  # noqa: BLE001
                 self._emit("turn.error", {"error": str(e)})
 
     def _post_one(self, prompt: str, *, url: str, previous_response_id: str | None) -> None:
-        body: dict[str, Any] = {"input": prompt, "stream": True, "store": False}
+        # NB: do NOT set store=False on the host call — the Responses host server
+        # uses its own transcript store to resolve previous_response_id, and
+        # opting out wipes the model's memory of prior turns (RFP grounding,
+        # tool outputs, etc.). The upstream-model `store` flag is pinned in
+        # runtime/foundry_host.py, which is the right place for it.
+        body: dict[str, Any] = {"input": prompt, "stream": True}
         if self.session_id:
             body["agent_session_id"] = self.session_id
         if previous_response_id:
@@ -329,7 +609,6 @@ class Bridge:
                     if etype == "response.function_call_arguments.done":
                         if current_tool is not None:
                             current_tool["args"] = str(data.get("arguments") or current_tool["args"])
-                            self._emit("tool.args", {"name": current_tool["name"], "args": current_tool["args"][:1200]})
                         continue
 
                     if etype == "response.output_text.delta":
@@ -376,9 +655,19 @@ class Bridge:
                 return
 
         dashboard = _maybe_extract_dashboard(final_text)
+        # Learn the customer name + status from the dashboard so the sidebar label is meaningful.
+        if dashboard:
+            customer = dashboard.get("customer") or ""
+            if customer and customer != self._current.get("customer_name"):
+                self._current["customer_name"] = customer
+                if (self._current.get("label") or "").lower() in ("", "new project"):
+                    self._current["label"] = customer
+                _save_projects(self._projects_data)
+                self._emit("projects.update", self._projects_payload())
         self._emit("turn.complete", {
             "response_id": response_id,
             "session_id": self.session_id,
+            "project_id": self.project_id,
             "text": final_text,
             "dashboard": dashboard,
         })

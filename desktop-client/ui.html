@@ -51,6 +51,40 @@
   .auth-pill.ok { background: #dafbe1; color: #1a7f37; }
   .auth-pill.bad { background: #ffebe9; color: #cf222e; }
 
+  /* Service-status pills (Foundry, WorkIQ) — light up when used this turn */
+  .svc-pills { display: flex; gap: 6px; align-items: center; margin-right: 8px; }
+  .svc-pill {
+    font-size: 11px; padding: 3px 8px; border-radius: 999px;
+    background: var(--pill-bg); color: var(--muted);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .svc-pill::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--line); display: inline-block;
+  }
+  .svc-pill.live { background: #dafbe1; color: #1a7f37; }
+  .svc-pill.live::before { background: #1a7f37; box-shadow: 0 0 4px #1a7f37; }
+  .svc-pill.warm { background: #fff8c5; color: #7d5e00; }
+  .svc-pill.warm::before { background: #d4a72c; }
+
+  /* Inline phase cards in the chat stream — historical "this happened"
+     markers, deliberately muted so they don't read as live activity. */
+  .phase-card {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin: 6px 0;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: #f6f8fa; color: var(--muted);
+    font-size: 11.5px; max-width: 88%;
+  }
+  .phase-card.info  { background: #f6f8fa; border-color: var(--line); color: var(--muted); }
+  .phase-card.muted { background: #f6f8fa; border-color: var(--line); color: var(--muted); }
+  .phase-card .icon { font-size: 11px; line-height: 1; color: #2da44e; font-weight: 700; }
+  .phase-card .text { flex: 1; }
+  .phase-card .text b { font-weight: 600; color: #57606a; }
+  .phase-card .sub { display: none; }
+
   /* Dashboard widget */
   section.dashboard {
     background: var(--panel);
@@ -117,6 +151,50 @@
   .quick .label { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-right: 4px; }
   .quick .btn { padding: 4px 10px; font-size: 12.5px; }
 
+  /* Middle row: projects sidebar (left) + main content (right) */
+  .middle { flex: 1 1 auto; display: flex; min-height: 0; }
+
+  aside.projects {
+    width: 230px; flex: 0 0 230px;
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .proj-head {
+    padding: 10px 12px; border-bottom: 1px solid var(--line-soft);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 6px;
+  }
+  .proj-head .title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .proj-head .btn { padding: 3px 8px; font-size: 12px; }
+  .proj-list { flex: 1 1 auto; overflow-y: auto; padding: 6px 0; }
+  .proj-item {
+    padding: 8px 12px; cursor: pointer;
+    border-left: 3px solid transparent;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .proj-item:hover { background: rgba(0,0,0,0.03); }
+  .proj-item.active {
+    background: rgba(9, 105, 218, 0.08);
+    border-left-color: var(--accent);
+  }
+  .proj-item .label { font-size: 13px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proj-item .sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proj-item .row {
+    display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  }
+  .proj-item .del {
+    background: transparent; border: 0; color: var(--muted); font-size: 14px;
+    line-height: 1; padding: 2px 4px; cursor: pointer; border-radius: 4px;
+    opacity: 0; transition: opacity .12s;
+  }
+  .proj-item:hover .del { opacity: 1; }
+  .proj-item .del:hover { background: rgba(207,34,46,0.12); color: #cf222e; }
+
+  /* Content column inside the middle row */
+  .content { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+
   /* Split: chat (left) + activity (right) */
   .split {
     flex: 1 1 auto;
@@ -151,41 +229,67 @@
     font-size: 12.5px;
   }
 
-  /* Busy indicator */
-  .busy-bar {
-    display: none;
-    align-items: center; gap: 8px;
-    padding: 6px 12px;
-    margin-bottom: 12px;
-    background: #ddf4ff;
-    border: 1px solid #b6e3ff;
-    border-radius: 6px;
-    color: #0550ae;
+  /* Thinking shimmer — agent bubble while waiting for the first token */
+  .bubble.thinking {
+    display: inline-block;
+    width: auto;
+    min-height: 18px;
+    min-width: 120px;
+    color: transparent;
+    background:
+      linear-gradient(90deg,
+        rgba(246,248,250,0.6) 0%,
+        rgba(208,215,222,0.9) 50%,
+        rgba(246,248,250,0.6) 100%) ,
+      var(--agent-bubble);
+    background-size: 200% 100%, 100% 100%;
+    animation: shimmer 1.4s linear infinite;
+  }
+  .bubble.thinking::after {
+    content: attr(data-thinking-label);
+    display: inline-block;
+    color: var(--muted);
     font-size: 12.5px;
+    font-style: italic;
   }
-  .busy-bar.on { display: inline-flex; }
-  .spinner {
-    width: 12px; height: 12px;
-    border: 2px solid #b6e3ff;
-    border-top-color: #0550ae;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+  @keyframes shimmer {
+    0%   { background-position: 200% 0, 0 0; }
+    100% { background-position: -200% 0, 0 0; }
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* Activity column */
+  /* Activity / Logs column */
   aside.activity {
     background: var(--panel);
     border-left: 1px solid var(--line);
     display: flex; flex-direction: column;
     min-height: 0;
   }
-  aside.activity h2 {
-    margin: 0; padding: 10px 14px;
-    font-size: 12px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
-    border-bottom: 1px solid var(--line-soft);
+  .tabs {
+    display: flex; border-bottom: 1px solid var(--line-soft);
+    background: var(--panel);
   }
+  .tab {
+    flex: 1; text-align: center;
+    padding: 9px 8px;
+    font-size: 11.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+    cursor: pointer; border: 0; background: transparent;
+    border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: var(--ink); border-bottom-color: var(--accent); }
+  .tab:hover { color: var(--ink); }
+  .pane { flex: 1 1 auto; overflow-y: auto; padding: 8px 12px; min-height: 0; }
+  .pane.hidden { display: none; }
+  .logs-list { font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .log-line {
+    padding: 3px 4px; border-bottom: 1px solid var(--line-soft);
+    word-break: break-all; white-space: pre-wrap;
+    color: var(--ink);
+  }
+  .log-line .ts { color: var(--muted); margin-right: 6px; }
+  .log-line.tool .name { color: var(--accent); font-weight: 600; }
+  .log-line.text .name { color: var(--submitted); }
+  .log-line.err  .name { color: var(--atrisk); }
   .activity-list { flex: 1 1 auto; overflow-y: auto; padding: 8px 12px; }
   .activity-empty { color: var(--muted); font-style: italic; font-size: 12.5px; padding: 6px 2px; }
   .act {
@@ -228,6 +332,10 @@
     <div class="meta" id="endpointMeta" style="margin-top:2px;">endpoint: —</div>
   </div>
   <div class="controls">
+    <div class="svc-pills" id="svcPills">
+      <span class="svc-pill" id="svcFoundry" title="Foundry / host model">Foundry</span>
+      <span class="svc-pill" id="svcWorkIQ" title="WorkIQ Toolbox">WorkIQ</span>
+    </div>
     <label class="meta" for="modeSelect" style="text-transform:uppercase;letter-spacing:0.04em;font-size:11px;">Run against</label>
     <select id="modeSelect" class="btn secondary" style="padding:5px 8px;font-size:12.5px;">
       <option value="hosted">Hosted (Foundry)</option>
@@ -236,9 +344,22 @@
     <span class="auth-pill" id="userPill" style="display:none;"></span>
     <span class="auth-pill" id="authPill">signed out</span>
     <button class="btn secondary" id="loginBtn">Sign in</button>
-    <button class="btn secondary" id="resetBtn" title="Forget the current Foundry sandbox; next message will create a new one.">New project</button>
+    <button class="btn secondary" id="resetBtn" title="Forget the current Foundry sandbox; next message will create a new one.">Reset session</button>
   </div>
 </header>
+
+<div class="middle">
+  <aside class="projects">
+    <div class="proj-head">
+      <span class="title">Projects</span>
+      <button class="btn secondary" id="newProjectBtn" title="Start a new project — keeps existing ones intact.">+ New</button>
+    </div>
+    <div class="proj-list" id="projList">
+      <div class="activity-empty" style="padding: 8px 12px;">No projects yet.</div>
+    </div>
+  </aside>
+
+  <div class="content">
 
 <section class="dashboard" id="dashboard">
   <div class="dash-empty">No active project. Describe an RFP you just received (e.g. “I just had a kickoff call about the &lt;customer&gt; RFP — pull the meeting notes and start the SOW response”).</div>
@@ -253,18 +374,27 @@
 
 <div class="split">
   <main class="transcript" id="transcript">
-    <div class="busy-bar" id="busyBar">
-      <span class="spinner"></span>
-      <span>Agent is working… <span id="busyClock">0.0s</span></span>
-    </div>
   </main>
   <aside class="activity">
-    <h2>Activity</h2>
-    <div class="activity-list" id="activity">
-      <div class="activity-empty">No tool calls yet.</div>
+    <div class="tabs">
+      <button class="tab active" data-pane="activityPane" id="tabActivity">Activity</button>
+      <button class="tab" data-pane="logsPane" id="tabLogs">Logs</button>
+    </div>
+    <div class="pane" id="activityPane">
+      <div class="activity-list" id="activity">
+        <div class="activity-empty">No tool calls yet.</div>
+      </div>
+    </div>
+    <div class="pane hidden" id="logsPane">
+      <div class="logs-list" id="logs">
+        <div class="activity-empty">No log entries yet.</div>
+      </div>
     </div>
   </aside>
 </div>
+
+  </div><!-- /.content -->
+</div><!-- /.middle -->
 
 <footer class="input">
   <textarea id="prompt" placeholder="Type a message and press Enter (Shift+Enter for newline)…" rows="2"></textarea>
@@ -287,16 +417,16 @@ const sessionMeta = $("sessionMeta");
 const endpointMeta = $("endpointMeta");
 const modeSelect = $("modeSelect");
 const activityList = $("activity");
-const busyBar = $("busyBar");
-const busyClock = $("busyClock");
+const logsList = $("logs");
+const svcFoundry = $("svcFoundry");
+const svcWorkIQ = $("svcWorkIQ");
 
 let signedIn = false;
 let busy = false;
 let currentAgentMsg = null;       // streaming agent bubble DOM node
 let currentAgentBuffer = "";      // accumulated agent text for the in-flight turn
-let activeTool = null;            // {node, startedAt} for the most recent tool.call
-let busyStartedAt = 0;
-let busyTimer = null;
+let activeTool = null;            // {node, startedAt, ticker} for the most recent tool.call
+const shownPhaseCards = new Set();// phase-card keys already rendered this turn
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
@@ -328,7 +458,141 @@ function setUser(name) {
 
 function clearActivity() {
   activityList.innerHTML = `<div class="activity-empty">No tool calls yet.</div>`;
+  logsList.innerHTML = `<div class="activity-empty">No log entries yet.</div>`;
   activeTool = null;
+  shownPhaseCards.clear();
+  setServicePill(svcFoundry, "");
+  setServicePill(svcWorkIQ, "");
+}
+
+// Phase-card definitions — milestone tool calls that get rendered inline in
+// the chat stream (Hub-Cowork-style yellow/blue cards). `once: true` means
+// only render the first occurrence per turn (e.g. "Kicking off sections"
+// shouldn't repeat for each section).
+// Phase cards are inserted at the moment a milestone tool fires, but the
+// user reads them *after* the turn — so the labels are past-tense and the
+// icon is a checkmark, to clearly signal "this happened" rather than "this is
+// happening now".
+const PHASE_CARDS = {
+  start_charter:     { icon: "✓", label: "Charter started",   sub: "wrote project_charter.md and seeded the project log", tone: "" },
+  add_charter_task:  { icon: "✓", label: "Sections added",    sub: "one task per section", tone: "info", once: true },
+  record_kickoff:    { icon: "✓", label: "Owners kicked off", sub: "Teams DM → email fallback per the communication matrix", tone: "info", once: true },
+  dashboard_payload: { icon: "✓", label: "Dashboard prepared", sub: "",                     tone: "muted", once: true },
+};
+
+function renderPhaseCard(toolName) {
+  const spec = PHASE_CARDS[toolName];
+  if (!spec) return;
+  if (spec.once && shownPhaseCards.has(toolName)) return;
+  shownPhaseCards.add(toolName);
+  const card = document.createElement("div");
+  card.className = `phase-card ${spec.tone || ""}`;
+  card.innerHTML = `<div class="icon">${escapeHtml(spec.icon || "•")}</div>`
+    + `<div class="text"><b>${escapeHtml(spec.label)}</b>${spec.sub ? `<div class="sub">${escapeHtml(spec.sub)}</div>` : ""}</div>`;
+  // Insert the card BEFORE the in-flight agent bubble so the order reads
+  // user → cards → agent. If there's no bubble yet, just append.
+  const bubbleWrap = currentAgentMsg ? currentAgentMsg.parentElement : null;
+  if (bubbleWrap && bubbleWrap.parentElement === transcript) {
+    transcript.insertBefore(card, bubbleWrap);
+  } else {
+    transcript.appendChild(card);
+  }
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+// Strip ```json kind=dashboard``` fenced blocks from agent text.
+// The dashboard payload is rendered in the top widget; showing the raw JSON
+// in the chat bubble is noise. Runs on every streaming delta as well as on
+// turn.complete, so we also handle the *partial* case where the opening fence
+// has streamed but the closing ``` hasn't arrived yet — strip from the first
+// ```json onward if no closing fence is seen.
+function stripDashboardJson(text) {
+  if (!text) return text;
+  let out = text.replace(/```(?:json)?\s*\{[\s\S]*?"kind"\s*:\s*"dashboard"[\s\S]*?\}\s*```/g, "");
+  // Handle an in-progress fence whose closing ``` hasn't streamed yet.
+  const open = out.lastIndexOf("```json");
+  if (open !== -1 && out.indexOf("```", open + 7) === -1) {
+    out = out.slice(0, open);
+  }
+  return out.trim();
+}
+
+function setServicePill(pill, state) {
+  if (!pill) return;
+  pill.classList.remove("live", "warm");
+  if (state) pill.classList.add(state);
+}
+
+function markServiceForTool(toolName) {
+  if (!toolName) return;
+  if (toolName.startsWith("WorkIQ")) {
+    setServicePill(svcWorkIQ, "live");
+    setServicePill(svcFoundry, "live");
+  } else {
+    // In-process @tool — the host model executed it, so Foundry is live.
+    setServicePill(svcFoundry, "live");
+  }
+}
+
+function tsNow() {
+  const d = new Date();
+  return d.toTimeString().slice(0, 8);
+}
+
+function addLogLine(kind, name, detail) {
+  const empty = logsList.querySelector(".activity-empty");
+  if (empty) empty.remove();
+  const node = document.createElement("div");
+  node.className = `log-line ${kind}`;
+  node.innerHTML = `<span class="ts">${escapeHtml(tsNow())}</span>`
+    + `<span class="name">${escapeHtml(name)}</span>`
+    + (detail ? ` ${escapeHtml(detail)}` : "");
+  logsList.appendChild(node);
+  logsList.scrollTop = logsList.scrollHeight;
+}
+
+// Map raw tool names → short human labels for business users.
+// In-process tools are listed explicitly; Toolbox tools fall back to a
+// service-derived label like "Mail · search_messages".
+const TOOL_LABELS = {
+  load_project_state: "Checking project state",
+  start_charter: "Starting project charter",
+  add_charter_task: "Adding a section",
+  record_kickoff: "Recording kickoff",
+  record_submission: "Recording a submission",
+  mark_task_polled: "Updating task status",
+  record_nudge_sent: "Recording nudge",
+  dashboard_payload: "Preparing dashboard",
+  state_read_text: "Reading project file",
+  state_read_json: "Reading project file",
+  state_write_text: "Writing project file",
+  state_write_json: "Writing project file",
+  state_list_files: "Listing project files",
+  state_file_exists: "Checking project file",
+  log_workflow_step: "Logging activity",
+};
+
+const SERVICE_LABELS = {
+  WorkIQMail2: "Mail",
+  WorkIQTeams: "Teams",
+  WorkIQCalendar2: "Calendar",
+  WorkIQSharePoint2: "SharePoint",
+  WorkIQOneDrive: "OneDrive",
+  WorkIQWord: "Word",
+  WorkIQUser: "People",
+  WorkIQCopilot: "Copilot",
+};
+
+function humanizeTool(rawName) {
+  if (!rawName) return "Working…";
+  if (TOOL_LABELS[rawName]) return TOOL_LABELS[rawName];
+  const m = rawName.match(/^([A-Za-z0-9]+)___(.+)$/);
+  if (m) {
+    const svc = SERVICE_LABELS[m[1]] || m[1];
+    const action = m[2].replace(/_/g, " ");
+    return `${svc} · ${action}`;
+  }
+  return rawName;
 }
 
 function addActivity(name) {
@@ -336,15 +600,21 @@ function addActivity(name) {
   if (empty) empty.remove();
   const node = document.createElement("div");
   node.className = "act running";
-  node.innerHTML = `<span class="dur">…</span><div class="name">${escapeHtml(name)}</div><div class="args"></div>`;
+  node.innerHTML = `<span class="dur">0.0s</span><div class="name">${escapeHtml(humanizeTool(name))}</div>`;
   activityList.appendChild(node);
   activityList.scrollTop = activityList.scrollHeight;
-  return { node, startedAt: performance.now() };
+  const startedAt = performance.now();
+  const dur = node.querySelector(".dur");
+  const ticker = setInterval(() => {
+    dur.textContent = `${((performance.now() - startedAt) / 1000).toFixed(1)}s`;
+  }, 100);
+  return { node, startedAt, ticker };
 }
 
 function finishActiveTool(state) {
   if (!activeTool) return;
-  const { node, startedAt } = activeTool;
+  const { node, startedAt, ticker } = activeTool;
+  if (ticker) clearInterval(ticker);
   node.classList.remove("running");
   node.classList.add(state || "done");
   const dur = node.querySelector(".dur");
@@ -352,20 +622,8 @@ function finishActiveTool(state) {
   activeTool = null;
 }
 
-function startBusy() {
-  busyStartedAt = performance.now();
-  busyBar.classList.add("on");
-  busyClock.textContent = "0.0s";
-  if (busyTimer) clearInterval(busyTimer);
-  busyTimer = setInterval(() => {
-    busyClock.textContent = `${((performance.now() - busyStartedAt) / 1000).toFixed(1)}s`;
-  }, 100);
-}
-
-function stopBusy() {
-  busyBar.classList.remove("on");
-  if (busyTimer) { clearInterval(busyTimer); busyTimer = null; }
-}
+function startBusy() { /* per-step indicators now live in the Activity pane */ }
+function stopBusy() { /* no-op — kept for call-site compatibility */ }
 
 function setSession(sid) {
   sessionMeta.textContent = sid ? `session: ${sid}` : "session: (none — platform will assign)";
@@ -450,7 +708,9 @@ async function sendPrompt(text) {
 
   addMsg("user", "you", text);
   currentAgentBuffer = "";
-  currentAgentMsg = addMsg("agent", "agent", "…");
+  currentAgentMsg = addMsg("agent", "agent", "");
+  currentAgentMsg.classList.add("thinking");
+  currentAgentMsg.setAttribute("data-thinking-label", "Thinking…");
   setBusy(true);
   startBusy();
   const r = await window.pywebview.api.send(text);
@@ -469,33 +729,47 @@ window.onAgentEvent = function (msg) {
   const p = msg.payload || {};
   switch (msg.event) {
     case "turn.start":
-      // Already handled in sendPrompt; just clear placeholder dot.
-      if (currentAgentMsg) currentAgentMsg.textContent = "";
+      // Already handled in sendPrompt; nothing to do here.
       break;
     case "session.update":
       setSession(p.session_id);
+      setServicePill(svcFoundry, "warm");
+      addLogLine("text", "session", p.session_id || "");
       break;
     case "tool.call":
       finishActiveTool("done");
       activeTool = addActivity(p.name);
-      break;
-    case "tool.args":
-      if (activeTool) {
-        const args = activeTool.node.querySelector(".args");
-        if (args) args.textContent = p.args || "";
+      markServiceForTool(p.name);
+      renderPhaseCard(p.name);
+      addLogLine("tool", p.name || "?", "");
+      if (currentAgentMsg && currentAgentMsg.classList.contains("thinking")) {
+        currentAgentMsg.setAttribute("data-thinking-label", humanizeTool(p.name) + "…");
       }
       break;
     case "text.delta":
       finishActiveTool("done");
+      if (currentAgentMsg && currentAgentMsg.classList.contains("thinking")) {
+        currentAgentMsg.classList.remove("thinking");
+        currentAgentMsg.removeAttribute("data-thinking-label");
+      }
       currentAgentBuffer += p.delta || "";
-      if (currentAgentMsg) currentAgentMsg.textContent = currentAgentBuffer;
+      if (currentAgentMsg) currentAgentMsg.textContent = stripDashboardJson(currentAgentBuffer);
       transcript.scrollTop = transcript.scrollHeight;
       break;
     case "turn.complete":
       finishActiveTool("done");
-      if (p.text && currentAgentMsg) currentAgentMsg.textContent = p.text;
+      if (currentAgentMsg) {
+        currentAgentMsg.classList.remove("thinking");
+        currentAgentMsg.removeAttribute("data-thinking-label");
+      }
+      {
+        const cleaned = stripDashboardJson(p.text || "");
+        if (cleaned && currentAgentMsg) currentAgentMsg.textContent = cleaned;
+      }
       if (p.dashboard) renderDashboard(p.dashboard);
       if (p.session_id) setSession(p.session_id);
+      addLogLine("text", "turn.complete", p.response_id ? `response=${p.response_id}` : "");
+      shownPhaseCards.clear();
       setBusy(false);
       stopBusy();
       currentAgentMsg = null;
@@ -503,16 +777,24 @@ window.onAgentEvent = function (msg) {
     case "turn.error":
       finishActiveTool("error");
       if (currentAgentMsg) {
+        currentAgentMsg.classList.remove("thinking");
+        currentAgentMsg.removeAttribute("data-thinking-label");
         currentAgentMsg.textContent = `error: ${p.error || "unknown"}`;
         currentAgentMsg.parentElement.classList.add("error");
       } else {
         addMsg("error", "system", p.error || "unknown");
       }
+      addLogLine("err", "turn.error", p.error || "");
+      shownPhaseCards.clear();
       setBusy(false);
       stopBusy();
       break;
     case "consent.required":
       addMsg("system", "consent", `Opening consent URL in browser: ${p.url}\nAfter you grant consent, the turn will retry automatically.`);
+      addLogLine("err", "consent.required", p.url || "");
+      break;
+    case "projects.update":
+      renderProjects(p);
       break;
   }
 };
@@ -527,6 +809,13 @@ promptEl.addEventListener("keydown", (e) => {
     promptEl.value = "";
     sendPrompt(v);
   }
+});
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === tab));
+    const paneId = tab.getAttribute("data-pane");
+    document.querySelectorAll(".pane").forEach(p => p.classList.toggle("hidden", p.id !== paneId));
+  });
 });
 loginBtn.addEventListener("click", async () => {
   setAuth("", "signing in…");
@@ -544,8 +833,100 @@ resetBtn.addEventListener("click", async () => {
   await window.pywebview.api.reset_session();
   setSession(null);
   clearActivity();
-  dashboard.innerHTML = `<div class="dash-empty">No active project. Use a quick-action or type a kickoff prompt to begin.</div>`;
-  addMsg("system", "system", "New project: the next message will create a fresh Foundry sandbox.");
+  dashboard.innerHTML = `<div class="dash-empty">Session reset. The next message will create a fresh Foundry sandbox under the current project.</div>`;
+  addMsg("system", "system", "Session reset. Same project, fresh Foundry sandbox.");
+});
+
+// ---- projects sidebar ----
+
+const projListEl = document.getElementById("projList");
+const newProjectBtn = document.getElementById("newProjectBtn");
+let activeProjectId = null;
+
+function renderProjects(payload) {
+  if (!payload || !payload.list) return;
+  activeProjectId = payload.active;
+  if (!payload.list.length) {
+    projListEl.innerHTML = `<div class="activity-empty" style="padding: 8px 12px;">No projects yet.</div>`;
+    return;
+  }
+  projListEl.innerHTML = "";
+  for (const p of payload.list) {
+    const row = document.createElement("div");
+    row.className = "proj-item" + (p.id === payload.active ? " active" : "");
+    row.dataset.pid = p.id;
+    const top = document.createElement("div");
+    top.className = "row";
+    const lbl = document.createElement("div");
+    lbl.className = "label";
+    lbl.textContent = p.label || "New project";
+    const del = document.createElement("button");
+    del.className = "del";
+    del.textContent = "✕";
+    del.title = "Delete this project";
+    del.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete project "${p.label}"? This only removes it from the sidebar — agent-side state stays on disk.`)) return;
+      const r = await window.pywebview.api.delete_project(p.id);
+      if (r && r.ok) {
+        renderProjects(r);
+        if (p.id === activeProjectId) {
+          // we deleted the active one; the bridge picked a new active — load it
+          await switchToActive();
+        }
+      }
+    });
+    top.appendChild(lbl);
+    top.appendChild(del);
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    sub.textContent = p.customer_name && p.customer_name !== p.label ? p.customer_name : (p.is_new ? "not started" : p.id);
+    row.appendChild(top);
+    row.appendChild(sub);
+    row.addEventListener("click", async () => {
+      if (p.id === activeProjectId) return;
+      const r = await window.pywebview.api.switch_project(p.id);
+      if (r && r.ok) {
+        renderProjects(r);
+        loadActiveProjectView(r);
+      }
+    });
+    projListEl.appendChild(row);
+  }
+}
+
+function clearTranscript() {
+  const t = document.getElementById("transcript");
+  if (t) t.innerHTML = "";
+  currentAgentMsg = null;
+  shownPhaseCards.clear();
+}
+
+function loadActiveProjectView(payload) {
+  // Switching projects clears the conversation view. The bridge already
+  // restored this project's session_id / previous_response_id; the next
+  // message resumes (or starts) that project's Foundry session.
+  clearTranscript();
+  clearActivity();
+  dashboard.innerHTML = `<div class="dash-empty">Switched to <b>${(payload && payload.list && (payload.list.find(p => p.id === payload.active) || {}).label) || "project"}</b>. Ask "show me where we are" to get the latest digest, or use a quick-action.</div>`;
+  setSession((payload && payload.session_id) || null);
+}
+
+async function switchToActive() {
+  const r = await window.pywebview.api.list_projects();
+  if (r && r.ok) {
+    renderProjects(r);
+    loadActiveProjectView(r);
+  }
+}
+
+newProjectBtn.addEventListener("click", async () => {
+  const r = await window.pywebview.api.new_project();
+  if (r && r.ok) {
+    renderProjects(r);
+    loadActiveProjectView(r);
+    addMsg("system", "system", "New project ready. Describe the RFP or paste the kickoff context to begin.");
+  }
 });
 modeSelect.addEventListener("change", async () => {
   const wanted = modeSelect.value;
@@ -572,6 +953,7 @@ window.addEventListener("pywebviewready", async () => {
   const ctx = await window.pywebview.api.ready();
   if (ctx && ctx.session_id) setSession(ctx.session_id);
   if (ctx && ctx.user_name) setUser(ctx.user_name);
+  if (ctx && ctx.projects) renderProjects(ctx.projects);
   if (ctx) {
     setEndpoint(ctx.mode, ctx.agent_url);
     // Disable dropdown options whose endpoint isn't configured.
@@ -583,7 +965,6 @@ window.addEventListener("pywebviewready", async () => {
       }
     }
   }
-  addMsg("system", "system", `Ready. Endpoint: ${ctx.mode} → ${ctx.agent_url || "(not configured)"}. Click “Sign in” to authenticate (uses your az login identity).`);
 });
 </script>
 </body>

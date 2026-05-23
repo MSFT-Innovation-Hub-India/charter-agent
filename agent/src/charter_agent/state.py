@@ -62,6 +62,76 @@ def home_dir() -> Path:
     return Path(os.environ["HOME"])
 
 
+# --- active project ------------------------------------------------------
+#
+# `$HOME/.active_project` is a single-line text file naming the current
+# project (e.g. "p-9a3f12"). Project files live under `$HOME/projects/<id>/`.
+# When unset, the agent defaults to "default" so cold-start dev still works,
+# but the desktop client provides a context preamble on every turn that the
+# skill uses to call `set_active_project` before any other tool.
+
+_ACTIVE_FILE = ".active_project"
+_DEFAULT_PROJECT = "default"
+_PROJECT_ID_OK = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+)
+
+
+def _validate_project_id(pid: str) -> str:
+    if not pid or not pid.strip():
+        raise ValueError("state: project_id must be a non-empty string.")
+    pid = pid.strip()
+    if len(pid) > 64:
+        raise ValueError("state: project_id must be <= 64 chars.")
+    if any(ch not in _PROJECT_ID_OK for ch in pid):
+        raise ValueError(f"state: project_id {pid!r} has invalid characters.")
+    return pid
+
+
+def active_project_id() -> str:
+    p = home_dir() / _ACTIVE_FILE
+    if not p.exists():
+        return _DEFAULT_PROJECT
+    val = p.read_text(encoding="utf-8").strip() or _DEFAULT_PROJECT
+    try:
+        return _validate_project_id(val)
+    except ValueError:
+        return _DEFAULT_PROJECT
+
+
+def set_active_project_id(pid: str) -> str:
+    pid = _validate_project_id(pid)
+    target = home_dir() / _ACTIVE_FILE
+    _atomic_write_bytes(target, pid.encode("utf-8"))
+    (home_dir() / "projects" / pid).mkdir(parents=True, exist_ok=True)
+    return pid
+
+
+def project_path(filename: str) -> str:
+    """Return a `$HOME`-relative path scoped to the active project.
+
+    Use this for every file that belongs to a specific project
+    (charter, log, deliverables, drafts). Cross-project files (e.g. the
+    `.active_project` pointer itself) stay at `$HOME` root.
+    """
+    pid = active_project_id()
+    return f"projects/{pid}/{filename}"
+
+
+def list_project_ids() -> list[str]:
+    root = home_dir() / "projects"
+    if not root.exists():
+        return []
+    out: list[str] = []
+    for child in sorted(root.iterdir()):
+        if child.is_dir():
+            try:
+                out.append(_validate_project_id(child.name))
+            except ValueError:
+                continue
+    return out
+
+
 def _resolve(rel_path: str) -> Path:
     if not rel_path or rel_path.strip() != rel_path:
         raise ValueError("state: path must be a non-empty, non-whitespace string.")

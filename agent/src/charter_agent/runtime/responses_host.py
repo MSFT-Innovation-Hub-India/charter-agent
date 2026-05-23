@@ -17,6 +17,7 @@ import logging
 from typing import Any
 
 from . import foundry_host
+from . import project_router
 
 _DEFAULT_SKILL = "sow-response"
 _log = logging.getLogger(__name__)
@@ -24,7 +25,9 @@ _log = logging.getLogger(__name__)
 
 def _build_resilient_host(agent: Any) -> Any:
     """Wrap `ResponsesHostServer` so a transient `context.get_history()` failure
-    degrades to "no prior turns" instead of `server_error`.
+    degrades to "no prior turns" instead of `server_error`, and so the
+    incoming user message is routed to the right project sandbox via
+    `project_router` before the model sees it.
 
     Workaround for an alpha bug in `agent_framework_foundry_hosting` documented
     in the canonical `04-foundry-toolbox` sample.
@@ -36,6 +39,7 @@ def _build_resilient_host(agent: Any) -> Any:
     class _ResilientResponsesHostServer(ResponsesHostServer):  # type: ignore[misc]
         async def _handle_inner_agent(self, request, context):  # type: ignore[override]
             original_get_history = context.get_history
+            original_get_input_items = context.get_input_items
 
             async def safe_get_history():  # type: ignore[no-untyped-def]
                 try:
@@ -47,7 +51,12 @@ def _build_resilient_host(agent: Any) -> Any:
                     )
                     return []
 
+            async def routed_get_input_items(*args, **kwargs):  # type: ignore[no-untyped-def]
+                items = await original_get_input_items(*args, **kwargs)
+                return project_router.route_input_items(items)
+
             context.get_history = safe_get_history  # type: ignore[method-assign]
+            context.get_input_items = routed_get_input_items  # type: ignore[method-assign]
             async for item in super()._handle_inner_agent(request, context):
                 yield item
 

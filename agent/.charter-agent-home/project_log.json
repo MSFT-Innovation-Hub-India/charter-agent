@@ -1,0 +1,228 @@
+{
+  "project_id": "northwind-sow-response-may26",
+  "project_kind": "sow_response",
+  "version": 1,
+  "created_at": "2026-05-23T06:40:54.748437+00:00",
+  "sow_owner_upn": "sansri@microsoft.com",
+  "deputy_upn": null,
+  "customer_name": "Northwind Trading Corp",
+  "grounding_sources": [
+    {
+      "kind": "copilot",
+      "ref": "https://outlook.office365.com/owa/?ItemID=AAMkADgwOTgyMDU0LTkwZjItNGIxNS1hNTRlLTAyNjg1NWVjZjM1YgBGAAAAAAD4zpA0W164TZ4cO%2f4cuPh4BwAwy8Z5PMf5T453BeAA8txFAAACCHQgAAD6PojKyENVSbrWqv1qFA8IAAyCaRTlAAA%3d&exvsurl=1&viewmodel=ReadMessageItem",
+      "used": true,
+      "note": "Northwind kickoff email and RFP email identified via Copilot"
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "technical-scope",
+      "title": "Technical Scope",
+      "owner_upn": "sansri@microsoft.com",
+      "owner_display_name": "Srikantan Sankaran",
+      "is_external": false,
+      "communication_modes": {
+        "preferred": "teams_message",
+        "allowed": [
+          "teams_message",
+          "email"
+        ],
+        "document_sharing": [
+          "onedrive",
+          "sharepoint",
+          "email",
+          "teams_message"
+        ]
+      },
+      "due_at": "2026-05-24T17:00:00+00:00",
+      "runbook_requirements": [
+        "Describe the target platform for the custom logistics and order-tracking solution.",
+        "Name the systems to integrate with, including SAP S/4HANA and the carrier EDI gateway.",
+        "Explain how order, inventory, and finance data will flow across the solution and integrations.",
+        "State how the solution supports zero-data-loss migration.",
+        "Cover testing scope across functional, integration, performance, and security testing."
+      ],
+      "status": "assigned",
+      "submissions": [],
+      "kickoff_sent": {
+        "channel": "teams_message",
+        "ref": null,
+        "at": null,
+        "failure_reason": "Teams DM send failed."
+      },
+      "nudges": [],
+      "last_polled_at": "2026-05-23T07:05:02.501614+00:00"
+    },
+    {
+      "task_id": "pm-delivery",
+      "title": "PM & Delivery",
+      "owner_upn": "KishoreMat_hcl.com#EXT#@microsoft.onmicrosoft.com",
+      "owner_display_name": "Kishore Kumar Matreja",
+      "is_external": true,
+      "communication_modes": {
+        "preferred": "email",
+        "allowed": [
+          "email"
+        ],
+        "document_sharing": [
+          "email"
+        ]
+      },
+      "due_at": "2026-05-24T17:00:00+00:00",
+      "runbook_requirements": [
+        "Provide the implementation and deployment approach across requirements elaboration, design, build, deploy, UAT, training, and cutover.",
+        "Show the timeline alignment to build/integration weeks 5–18, UAT weeks 19–22, and end-of-Q1 go-live.",
+        "Identify customer dependencies and assumptions affecting schedule feasibility.",
+        "Describe documentation, training, and knowledge-transfer deliverables.",
+        "Explain support and maintenance scope including SLA-based support, patch cadence, helpdesk, and audits."
+      ],
+      "status": "assigned",
+      "submissions": [],
+      "kickoff_sent": {
+        "channel": "email",
+        "ref": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A_j6IyshDVUm61qr9ahQPCAAMiwYhPgAA",
+        "at": "2026-05-23T06:41:43.599613+00:00"
+      },
+      "nudges": [],
+      "last_polled_at": null
+    },
+    {
+      "task_id": "commercials",
+      "title": "Commercials",
+      "owner_upn": "sansri@microsoft.com",
+      "owner_display_name": "Srikantan Sankaran",
+      "is_external": false,
+      "communication_modes": {
+        "preferred": "teams_message",
+        "allowed": [
+          "teams_message",
+          "email"
+        ],
+        "document_sharing": [
+          "onedrive",
+          "sharepoint",
+          "email",
+          "teams_message"
+        ]
+      },
+      "due_at": "2026-05-24T17:00:00+00:00",
+      "runbook_requirements": [
+        "Price the build as milestone-based fixed price.",
+        "State that change requests are handled on a T&M basis.",
+        "Provide separate pricing for 12 months of support.",
+        "Align the commercial construct to the customer's evaluation criteria and milestone preference."
+      ],
+      "status": "assigned",
+      "submissions": [],
+      "kickoff_sent": {
+        "channel": "teams_message",
+        "ref": null,
+        "at": null,
+        "failure_reason": "Teams DM send failed."
+      },
+      "nudges": [],
+      "last_polled_at": "2026-05-23T07:05:02.542116+00:00"
+    },
+    {
+      "task_id": "case-studies",
+      "title": "Case Studies",
+      "owner_upn": "KishoreMat_hcl.com#EXT#@microsoft.onmicrosoft.com",
+      "owner_display_name": "Kishore Kumar Matreja",
+      "is_external": true,
+      "communication_modes": {
+        "preferred": "email",
+        "allowed": [
+          "email"
+        ],
+        "document_sharing": [
+          "email"
+        ]
+      },
+      "due_at": "2026-05-24T17:00:00+00:00",
+      "runbook_requirements": [
+        "Provide credible case studies relevant to logistics and SAP-integrated delivery.",
+        "Substantiate delivery credibility with measurable outcomes.",
+        "Highlight examples that support the proposed implementation approach and timeline."
+      ],
+      "status": "assigned",
+      "submissions": [],
+      "kickoff_sent": {
+        "channel": "email",
+        "ref": "AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A_j6IyshDVUm61qr9ahQPCAAMiwYhPwAA",
+        "at": "2026-05-23T06:41:43.642931+00:00"
+      },
+      "nudges": [],
+      "last_polled_at": null
+    }
+  ],
+  "deliverable": {
+    "format": "word"
+  },
+  "consolidation_rules": {
+    "section_order": [
+      "executive-summary",
+      "technical-scope",
+      "pm-scope",
+      "commercial",
+      "case-studies"
+    ],
+    "cross_section_checks": []
+  },
+  "log_entries": [
+    {
+      "at": "2026-05-23T06:40:54.748437+00:00",
+      "kind": "started_charter",
+      "summary": "charter started",
+      "ref": "northwind-sow-response-may26"
+    },
+    {
+      "at": "2026-05-23T06:41:07.388214+00:00",
+      "kind": "added_task",
+      "summary": "added task technical-scope (sansri@microsoft.com)",
+      "ref": "technical-scope"
+    },
+    {
+      "at": "2026-05-23T06:41:07.424283+00:00",
+      "kind": "added_task",
+      "summary": "added task pm-delivery (KishoreMat_hcl.com#EXT#@microsoft.onmicrosoft.com)",
+      "ref": "pm-delivery"
+    },
+    {
+      "at": "2026-05-23T06:41:07.497887+00:00",
+      "kind": "added_task",
+      "summary": "added task commercials (sansri@microsoft.com)",
+      "ref": "commercials"
+    },
+    {
+      "at": "2026-05-23T06:41:07.547461+00:00",
+      "kind": "added_task",
+      "summary": "added task case-studies (KishoreMat_hcl.com#EXT#@microsoft.onmicrosoft.com)",
+      "ref": "case-studies"
+    },
+    {
+      "at": "2026-05-23T06:41:43.457374+00:00",
+      "kind": "kickoff_failed",
+      "summary": "technical-scope via teams_message: Teams DM send failed.",
+      "ref": "sansri@microsoft.com"
+    },
+    {
+      "at": "2026-05-23T06:41:43.544242+00:00",
+      "kind": "kickoff_failed",
+      "summary": "commercials via teams_message: Teams DM send failed.",
+      "ref": "sansri@microsoft.com"
+    },
+    {
+      "at": "2026-05-23T06:41:43.599644+00:00",
+      "kind": "kickoff_sent",
+      "summary": "pm-delivery via email",
+      "ref": "KishoreMat_hcl.com#EXT#@microsoft.onmicrosoft.com"
+    },
+    {
+      "at": "2026-05-23T06:41:43.642960+00:00",
+      "kind": "kickoff_sent",
+      "summary": "case-studies via email",
+      "ref": "KishoreMat_hcl.com#EXT#@microsoft.onmicrosoft.com"
+    }
+  ],
+  "status": "kicked_off"
+}

@@ -21,8 +21,18 @@ from agent_framework import tool  # type: ignore[import-not-found]
 from ... import state
 from ...observability import log_activity
 
-_LOG_PATH = "project_log.json"
-_CHARTER_PATH = "project_charter.md"
+# Project files live under `projects/<active_project_id>/`. The desktop client
+# names the active project via a context preamble on every turn; the skill
+# calls `set_active_project` before any other tool so these helpers resolve
+# to the right sandbox.
+
+
+def _log_path() -> str:
+    return state.project_path("project_log.json")
+
+
+def _charter_path() -> str:
+    return state.project_path("project_charter.md")
 
 # Project-level rollup. Order matters: scan tasks once and apply the bubble rule.
 _TASK_STATUSES = {
@@ -71,13 +81,14 @@ def _modes_for(is_external: bool) -> dict[str, Any]:
 
 
 def _read_log() -> dict[str, Any] | None:
-    if not state.exists(_LOG_PATH):
+    p = _log_path()
+    if not state.exists(p):
         return None
-    return state.read_json(_LOG_PATH)
+    return state.read_json(p)
 
 
 def _write_log(log: dict[str, Any]) -> None:
-    state.write_json(_LOG_PATH, log)
+    state.write_json(_log_path(), log)
 
 
 def _find_task(log: dict[str, Any], task_id: str) -> dict[str, Any] | None:
@@ -134,8 +145,8 @@ def load_project_state() -> dict[str, Any]:
     returned `mode` is the only thing you need to branch on:
 
     - `"first_run"` — no `project_log.json` in $HOME. Ground the project,
-      propose tasks, then call `commit_charter` to persist both files, then
-      fan out kickoffs.
+      call `start_charter` (project metadata + charter.md), then call
+      `add_charter_task` once per SOW section, then fan out kickoffs.
     - `"resume"` — a project_log already exists. Use the returned `project_log`
       as the source of truth; do NOT re-ground or re-write the charter.
 
@@ -147,47 +158,44 @@ def load_project_state() -> dict[str, Any]:
     return {
         "mode": "resume" if log is not None else "first_run",
         "project_log": log,
-        "charter_exists": state.exists(_CHARTER_PATH),
+        "charter_exists": state.exists(_charter_path()),
+        "active_project_id": state.active_project_id(),
     }
 
 
 @tool
-def commit_charter(
+def start_charter(
     project_id: str,
     customer_name: str,
     sow_owner_upn: str,
-    deputy_upn: str,
     charter_markdown: str,
-    tasks: list[dict[str, Any]],
-    grounding_sources: list[dict[str, Any]] | None = None,
-    consolidation_section_order: list[str] | None = None,
-    cross_section_checks: list[str] | None = None,
+    deputy_upn: str = "",
+    grounding_source_kind: str = "",
+    grounding_source_ref: str = "",
+    grounding_source_note: str = "",
 ) -> dict[str, Any]:
-    """Atomically write `project_charter.md` and `project_log.json` for a new project.
+    """Create the project: write `project_charter.md` and an empty `project_log.json`.
 
-    Refuses if `project_log.json` already exists — use the resume-mode tools
-    instead. Fills in every operational field (status enums, communication
-    modes, due-date default, empty submission lists, version, timestamps) so
-    the skill never has to know the on-disk shape.
+    Call this FIRST, then call `add_charter_task` once per SOW section, in order.
+    No tasks are added by this call — the project starts with an empty `tasks` list
+    and `status = "drafting"`. After all tasks are added, the project is ready
+    for kickoff fan-out.
+
+    Refuses if `project_log.json` already exists (resume mode — use the
+    resume-mode tools instead).
 
     Args:
         project_id: kebab-case slug ≤64 chars (e.g. `"contoso-sow-may26"`).
         customer_name: free-form customer/RFP issuer name.
         sow_owner_upn: the coordinator's UPN.
-        deputy_upn: backup coordinator's UPN. Pass an empty string if not named.
         charter_markdown: the full human-readable charter, already composed.
-        tasks: one dict per SOW section. Each must contain `task_id`, `title`,
-            `owner_upn`, `owner_display_name`, `is_external` (bool), and
-            `runbook_requirements` (list of strings derived from the RFP).
-            Optional: `due_at` (ISO; defaults to tomorrow 17:00 UTC).
-            `communication_modes` is derived from `is_external` — do not pass it.
-        grounding_sources: list of `{kind, ref, used, note}` dicts describing
-            what the project was grounded in. Optional.
-        consolidation_section_order: order of sections in the final deliverable.
-            Defaults to a sensible standard SOW ordering.
-        cross_section_checks: bullets describing reconciliation rules.
+        deputy_upn: backup coordinator's UPN. Empty string if not named.
+        grounding_source_kind: e.g. `"email"`, `"meeting"`, `"copilot"`, `"file"`.
+            Empty string if grounding wasn't from a single source.
+        grounding_source_ref: URL or id of the grounding source. Empty if N/A.
+        grounding_source_note: one-line note about what was grounded. Empty if N/A.
     """
-    if state.exists(_LOG_PATH):
+    if state.exists(_log_path()):
         return {
             "status": "error",
             "reason": "already_exists",
@@ -195,24 +203,14 @@ def commit_charter(
         }
 
     now = _now_iso()
-    normalised: list[dict[str, Any]] = []
-    for t in tasks:
-        is_external = bool(t.get("is_external", False))
-        normalised.append(
+    grounding_sources: list[dict[str, Any]] = []
+    if grounding_source_kind or grounding_source_ref or grounding_source_note:
+        grounding_sources.append(
             {
-                "task_id": t["task_id"],
-                "title": t["title"],
-                "owner_upn": t["owner_upn"],
-                "owner_display_name": t.get("owner_display_name", t["owner_upn"]),
-                "is_external": is_external,
-                "communication_modes": _modes_for(is_external),
-                "due_at": t.get("due_at") or _default_due_at(),
-                "runbook_requirements": list(t.get("runbook_requirements", [])),
-                "status": "assigned",
-                "submissions": [],
-                "kickoff_sent": {"channel": None, "ref": None, "at": None},
-                "nudges": [],
-                "last_polled_at": None,
+                "kind": grounding_source_kind or "unspecified",
+                "ref": grounding_source_ref,
+                "used": True,
+                "note": grounding_source_note,
             }
         )
 
@@ -224,32 +222,99 @@ def commit_charter(
         "sow_owner_upn": sow_owner_upn,
         "deputy_upn": deputy_upn or None,
         "customer_name": customer_name,
-        "grounding_sources": list(grounding_sources or []),
-        "tasks": normalised,
+        "grounding_sources": grounding_sources,
+        "tasks": [],
         "deliverable": {"format": "word"},
         "consolidation_rules": {
-            "section_order": list(consolidation_section_order or [
+            "section_order": [
                 "executive-summary",
                 "technical-scope",
                 "pm-scope",
                 "commercial",
                 "case-studies",
-            ]),
-            "cross_section_checks": list(cross_section_checks or []),
+            ],
+            "cross_section_checks": [],
         },
-        "log_entries": [{"at": now, "kind": "wrote_charter", "summary": "charter committed", "ref": project_id}],
-        "status": "drafted",
+        "log_entries": [
+            {"at": now, "kind": "started_charter", "summary": "charter started", "ref": project_id}
+        ],
+        "status": "drafting",
     }
 
-    state.write_text(_CHARTER_PATH, charter_markdown)
+    state.write_text(_charter_path(), charter_markdown)
     _write_log(log)
-    _audit("wrote_charter", f"committed charter for {project_id} ({len(normalised)} tasks)", project_id)
+    _audit("started_charter", f"started charter for {project_id}", project_id)
+
+    return {"status": "ok", "project_id": project_id, "version": 1, "tasks": []}
+
+
+@tool
+def add_charter_task(
+    task_id: str,
+    title: str,
+    owner_upn: str,
+    owner_display_name: str,
+    is_external: bool,
+    runbook_requirements: list[str],
+    due_at: str = "",
+) -> dict[str, Any]:
+    """Append one SOW section task to the project. Call once per section.
+
+    Must be called AFTER `start_charter`. Each call adds exactly one task with
+    `status = "assigned"`, empty submission list, and `communication_modes`
+    derived from `is_external`. Idempotent on `task_id` — if a task with the
+    same id exists, returns `status: "noop"`.
+
+    When all sections have been added, the project is ready for kickoff fan-out.
+    No explicit "finalize" call is needed.
+
+    Args:
+        task_id: kebab-case slug unique within the project (e.g. `"technical-scope"`).
+        title: human-readable section title.
+        owner_upn: UPN of the assigned owner.
+        owner_display_name: friendly display name.
+        is_external: True if the owner is outside the SOW Owner's tenant (different
+            email domain — customer, partner, vendor). Drives the communication
+            matrix: external → email-only; internal → Teams DM preferred.
+        runbook_requirements: bullets derived from the RFP describing what the
+            owner must deliver. Plain strings; one per requirement.
+        due_at: ISO timestamp. Empty string → defaults to tomorrow 17:00 UTC.
+    """
+    log = _read_log()
+    if log is None:
+        return {
+            "status": "error",
+            "reason": "no_project",
+            "message": "call start_charter first; no project_log.json exists.",
+        }
+
+    if _find_task(log, task_id) is not None:
+        return {"status": "noop", "task_id": task_id, "reason": "task already exists"}
+
+    task = {
+        "task_id": task_id,
+        "title": title,
+        "owner_upn": owner_upn,
+        "owner_display_name": owner_display_name or owner_upn,
+        "is_external": bool(is_external),
+        "communication_modes": _modes_for(bool(is_external)),
+        "due_at": due_at or _default_due_at(),
+        "runbook_requirements": list(runbook_requirements),
+        "status": "assigned",
+        "submissions": [],
+        "kickoff_sent": {"channel": None, "ref": None, "at": None},
+        "nudges": [],
+        "last_polled_at": None,
+    }
+    log["tasks"].append(task)
+    _append_log_entry(log, "added_task", f"added task {task_id} ({owner_upn})", task_id)
+    _write_log(log)
+    _audit("added_task", f"added task {task_id} for {owner_upn}", task_id)
 
     return {
         "status": "ok",
-        "project_id": project_id,
-        "version": 1,
-        "tasks": [t["task_id"] for t in normalised],
+        "task_id": task_id,
+        "task_count": len(log["tasks"]),
     }
 
 
@@ -506,7 +571,8 @@ def dashboard_payload() -> dict[str, Any]:
 
 TOOLS: list[Any] = [
     load_project_state,
-    commit_charter,
+    start_charter,
+    add_charter_task,
     record_kickoff,
     record_submission,
     mark_task_polled,
