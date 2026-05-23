@@ -262,6 +262,31 @@
     font-size: 12.5px;
   }
 
+  /* Markdown inside agent bubble */
+  .msg.agent .bubble { white-space: normal; }
+  .msg.agent .bubble p { margin: 0 0 8px; }
+  .msg.agent .bubble p:last-child { margin-bottom: 0; }
+  .msg.agent .bubble h1,
+  .msg.agent .bubble h2,
+  .msg.agent .bubble h3 { margin: 10px 0 6px; font-weight: 600; }
+  .msg.agent .bubble h1 { font-size: 16px; }
+  .msg.agent .bubble h2 { font-size: 15px; }
+  .msg.agent .bubble h3 { font-size: 14px; }
+  .msg.agent .bubble ul,
+  .msg.agent .bubble ol { margin: 4px 0 8px; padding-left: 22px; }
+  .msg.agent .bubble li { margin: 2px 0; }
+  .msg.agent .bubble code {
+    background: #f1f3f5; padding: 1px 5px; border-radius: 4px;
+    font-family: var(--mono); font-size: 12.5px;
+  }
+  .msg.agent .bubble pre {
+    background: #f6f8fa; border: 1px solid var(--line-soft); border-radius: 6px;
+    padding: 8px 10px; margin: 6px 0; overflow-x: auto;
+  }
+  .msg.agent .bubble pre code { background: transparent; padding: 0; }
+  .msg.agent .bubble strong { font-weight: 600; }
+  .msg.agent .bubble em { font-style: italic; }
+
   /* Thinking shimmer — agent bubble while waiting for the first token */
   .bubble.thinking {
     display: inline-block;
@@ -548,6 +573,93 @@ function stripDashboardJson(text) {
     out = out.slice(0, open);
   }
   return out.trim();
+}
+
+// Minimal, safe Markdown → HTML for streaming agent text. Handles paragraphs,
+// headings (### / ## / #), bullets, ordered lists, **bold**, *italic*,
+// `inline code`, and ```fenced code```. Escapes HTML first so nothing the
+// model emits can inject markup.
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+function mdToHtml(src) {
+  if (!src) return "";
+  // Pull out fenced code blocks first so inline rules don't touch them.
+  // ```markdown / ```md fences are unwrapped and rendered as Markdown (the
+  // agent often wraps the charter that way to "show" it — user wants the
+  // rendered view, not the source).
+  const fences = [];
+  let text = src.replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, body) => {
+    const l = (lang || "").toLowerCase();
+    if (l === "markdown" || l === "md" || l === "") {
+      // Unwrap; render as Markdown inline by leaving the body in the stream.
+      return body.replace(/\n$/, "");
+    }
+    fences.push(`<pre><code>${escapeHtml(body.replace(/\n$/, ""))}</code></pre>`);
+    return `\u0000FENCE${fences.length - 1}\u0000`;
+  });
+  text = escapeHtml(text);
+  // Headings.
+  text = text.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+  text = text.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+  text = text.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+  // Lists: collapse consecutive bullet/ordered lines into <ul>/<ol>.
+  const lines = text.split("\n");
+  const out = [];
+  let listType = null;          // 'ul' | 'ol' | null
+  let para = [];
+  function flushPara() {
+    if (para.length) {
+      out.push("<p>" + para.join("<br>") + "</p>");
+      para = [];
+    }
+  }
+  function flushList() {
+    if (listType) {
+      out.push(`</${listType}>`);
+      listType = null;
+    }
+  }
+  for (const line of lines) {
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
+    if (bullet) {
+      flushPara();
+      if (listType !== "ul") { flushList(); out.push("<ul>"); listType = "ul"; }
+      out.push("<li>" + bullet[1] + "</li>");
+    } else if (ordered) {
+      flushPara();
+      if (listType !== "ol") { flushList(); out.push("<ol>"); listType = "ol"; }
+      out.push("<li>" + ordered[1] + "</li>");
+    } else if (line.trim() === "") {
+      flushList();
+      flushPara();
+    } else if (/^<h\d>/.test(line)) {
+      flushList();
+      flushPara();
+      out.push(line);
+    } else {
+      flushList();
+      para.push(line);
+    }
+  }
+  flushList();
+  flushPara();
+  let html = out.join("\n");
+  // Inline: **bold**, *italic*, `code`.
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  // Restore code fences.
+  html = html.replace(/\u0000FENCE(\d+)\u0000/g, (_, i) => fences[Number(i)]);
+  return html;
+}
+function renderAgentText(node, raw) {
+  if (!node) return;
+  node.innerHTML = mdToHtml(stripDashboardJson(raw));
 }
 
 function setServicePill(pill, state) {
@@ -956,7 +1068,7 @@ window.onAgentEvent = function (msg) {
         currentAgentMsg.removeAttribute("data-thinking-label");
       }
       currentAgentBuffer += p.delta || "";
-      if (currentAgentMsg) currentAgentMsg.textContent = stripDashboardJson(currentAgentBuffer);
+      if (currentAgentMsg) renderAgentText(currentAgentMsg, currentAgentBuffer);
       transcript.scrollTop = transcript.scrollHeight;
       break;
     case "turn.complete":
@@ -966,8 +1078,8 @@ window.onAgentEvent = function (msg) {
         currentAgentMsg.removeAttribute("data-thinking-label");
       }
       {
-        const cleaned = stripDashboardJson(p.text || "");
-        if (cleaned && currentAgentMsg) currentAgentMsg.textContent = cleaned;
+        const finalRaw = p.text || currentAgentBuffer;
+        if (finalRaw && currentAgentMsg) renderAgentText(currentAgentMsg, finalRaw);
       }
       if (p.dashboard) renderDashboard(p.dashboard);
       if (p.session_id) setSession(p.session_id);

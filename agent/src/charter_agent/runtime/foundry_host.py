@@ -91,6 +91,55 @@ class _ToolboxAuth(httpx.Auth):
         yield request
 
 
+def _build_credential() -> Any:
+    """Channel-level credential for talking to the Foundry model deployment
+    and the Toolbox MCP endpoint.
+
+    Per AGENTS.md invariant 3, this is **not** a user credential — user
+    identity propagation into WorkIQ calls is the Foundry platform's job
+    (OAuth Identity Passthrough on the Toolbox connections). This credential
+    is the *agent process's own* identity:
+
+    - **In production (hosted on Foundry):** the Foundry-assigned Managed
+      Identity is picked up by `DefaultAzureCredential` (first link in its
+      chain). Silent, no UI.
+    - **In local dev:** `DefaultAzureCredential` tries `az`, VS Code, etc.
+      If all silent options fail (no `az login`, no broker), we fall through
+      to `InteractiveBrowserCredential` with an on-disk token cache so the
+      developer signs in once via browser and subsequent runs are silent.
+
+    The interactive fallback is unreachable in production: a hosted agent
+    has no UI, but it also never needs the fallback because MI succeeds.
+    """
+    from azure.identity import (
+        AuthenticationRecord,
+        ChainedTokenCredential,
+        DefaultAzureCredential,
+        InteractiveBrowserCredential,
+        TokenCachePersistenceOptions,
+    )
+
+    record_path = home_dir() / ".msal-cache" / "auth_record.json"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_record: Any = None
+    if record_path.exists():
+        try:
+            auth_record = AuthenticationRecord.deserialize(record_path.read_text(encoding="utf-8"))
+        except Exception:
+            auth_record = None
+
+    try:
+        cache_opts = TokenCachePersistenceOptions(name="charter-agent", allow_unencrypted_storage=True)
+        interactive = InteractiveBrowserCredential(
+            cache_persistence_options=cache_opts,
+            authentication_record=auth_record,
+        )
+    except Exception:
+        interactive = InteractiveBrowserCredential(authentication_record=auth_record)
+
+    return ChainedTokenCredential(DefaultAzureCredential(), interactive)
+
+
 def _make_mcp_tool(allowlist: tuple[str, ...] | None) -> Any:
     """Build an `MCPStreamableHTTPTool` sharing the warm http_client + URL."""
     from agent_framework import MCPStreamableHTTPTool  # type: ignore[import-not-found]
@@ -134,9 +183,10 @@ def bootstrap() -> None:
     cfg = _read_config()
 
     from agent_framework_foundry import FoundryChatClient  # type: ignore[import-not-found]
-    from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 
-    _credential = DefaultAzureCredential()
+    _credential = _build_credential()
+    from azure.identity import get_bearer_token_provider
+
     _token_provider = get_bearer_token_provider(
         _credential, "https://ai.azure.com/.default"
     )

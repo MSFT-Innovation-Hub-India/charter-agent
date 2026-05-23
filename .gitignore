@@ -100,6 +100,8 @@ frontend/ui/build/
 **/.smoke_home/
 .local_home/
 **/.local_home/
+.charter-agent-home/
+**/.charter-agent-home/
 **/agent_session/
 **/activity.json
 **/state.json
