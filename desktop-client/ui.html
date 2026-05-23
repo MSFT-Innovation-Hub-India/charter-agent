@@ -193,7 +193,20 @@
     background: var(--panel);
     display: flex; flex-direction: column;
     overflow: hidden;
+    transition: width 0.18s ease, flex-basis 0.18s ease;
   }
+  .middle.sidebar-collapsed aside.projects {
+    width: 0; flex-basis: 0; border-right: 0;
+  }
+
+  /* Hamburger toggle in the header */
+  .hamburger {
+    background: transparent; border: 1px solid transparent;
+    color: var(--ink); font-size: 18px; line-height: 1;
+    padding: 4px 8px; border-radius: 6px; cursor: pointer;
+    margin-right: 8px;
+  }
+  .hamburger:hover { background: rgba(0,0,0,0.05); border-color: var(--line); }
   .proj-head {
     padding: 10px 12px; border-bottom: 1px solid var(--line-soft);
     display: flex; align-items: center; justify-content: space-between;
@@ -384,10 +397,13 @@
 <body>
 
 <header class="app">
-  <div>
-    <h1>Project Charter Desktop Agent</h1>
-    <div class="meta" id="sessionMeta">session: (none — platform will assign)</div>
-    <div class="meta" id="endpointMeta" style="margin-top:2px;">endpoint: —</div>
+  <div style="display:flex; align-items:flex-start; gap:4px;">
+    <button class="hamburger" id="toggleSidebarBtn" title="Show/hide projects list" aria-label="Toggle projects list">☰</button>
+    <div>
+      <h1>Project Charter Desktop Agent</h1>
+      <div class="meta" id="sessionMeta">session: (none — platform will assign)</div>
+      <div class="meta" id="endpointMeta" style="margin-top:2px;">endpoint: —</div>
+    </div>
   </div>
   <div class="controls">
     <div class="svc-pills" id="svcPills">
@@ -503,6 +519,8 @@ function setAuth(state, label) {
   authPill.className = `auth-pill ${state}`;
   authPill.textContent = label;
   signedIn = (state === "ok");
+  const loginBtn = document.getElementById("loginBtn");
+  if (loginBtn) loginBtn.style.display = signedIn ? "none" : "";
 }
 
 function setUser(name) {
@@ -1135,6 +1153,12 @@ document.querySelectorAll(".tab").forEach(tab => {
     document.querySelectorAll(".pane").forEach(p => p.classList.toggle("hidden", p.id !== paneId));
   });
 });
+const toggleSidebarBtn = document.getElementById("toggleSidebarBtn");
+const middleEl = document.querySelector(".middle");
+toggleSidebarBtn.addEventListener("click", () => {
+  middleEl.classList.toggle("sidebar-collapsed");
+});
+
 loginBtn.addEventListener("click", async () => {
   setAuth("", "signing in…");
   const r = await window.pywebview.api.login();
@@ -1264,8 +1288,13 @@ modeSelect.addEventListener("change", async () => {
   }
   setSession(null);
   setEndpoint(r.mode, r.agent_url);
-  dashboard.innerHTML = `<div class="dash-empty">Switched to ${r.mode} endpoint. Next message creates a fresh sandbox there.</div>`;
-  addMsg("system", "system", `Switched endpoint → ${r.mode} (${r.agent_url}). Session id was dropped.`);
+  if (r.projects) renderProjects(r.projects);
+  if (r.view) {
+    if (r.view.activity) renderActivityLog(r.view.activity);
+    if (r.view.dashboard) renderDashboard(r.view.dashboard);
+    else dashboard.innerHTML = `<div class="dash-empty">Switched to ${r.mode} endpoint. Next message creates a fresh sandbox there.</div>`;
+  }
+  addMsg("system", "system", `Switched endpoint → ${r.mode} (${r.agent_url}). Project list now scoped to ${r.mode}.`);
 });
 document.querySelectorAll(".qa").forEach(el => {
   el.addEventListener("click", () => sendPrompt(el.dataset.prompt));
@@ -1290,6 +1319,22 @@ window.addEventListener("pywebviewready", async () => {
       if (!eps[opt.value]) {
         opt.textContent = `${opt.textContent} — not configured`;
         opt.disabled = true;
+      }
+    }
+    // If we have a saved AuthenticationRecord from a previous launch, try a
+    // silent token refresh so the UI shows "signed in" without a popup.
+    if (ctx.has_record && !ctx.user_name) {
+      setAuth("", "signing in…");
+      try {
+        const sr = await window.pywebview.api.signin_silent();
+        if (sr && sr.ok) {
+          setAuth("ok", "signed in");
+          setUser(sr.user_name);
+        } else {
+          setAuth("", "signed out");
+        }
+      } catch (e) {
+        setAuth("", "signed out");
       }
     }
   }

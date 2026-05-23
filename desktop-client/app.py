@@ -88,11 +88,47 @@ except Exception:  # noqa: BLE001
     _BROKER_AVAILABLE = False
 
 DEFAULT_LOCAL = "http://localhost:8088/responses"
+DEFAULT_HOSTED_AGENT_NAME = "charter-agent"
 TENANT_ID = os.environ.get("SPIKE_TENANT_ID") or None
 SCOPE = "https://ai.azure.com/.default"
 HTTP_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 
+
+def _load_agent_env() -> None:
+    """Best-effort load of `<repo>/agent/.env` so the client picks up FOUNDRY_PROJECT_ENDPOINT."""
+    env_path = pathlib.Path(__file__).resolve().parent.parent / "agent" / ".env"
+    if not env_path.is_file():
+        return
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _resolve_hosted_url() -> str:
+    """Resolve hosted /responses URL from explicit env or construct from FOUNDRY_PROJECT_ENDPOINT."""
+    explicit = os.environ.get("AGENT_ENDPOINT_HOSTED") or os.environ.get("AGENT_RESPONSES_URL")
+    if explicit:
+        return explicit.strip()
+    project_endpoint = (os.environ.get("FOUNDRY_PROJECT_ENDPOINT") or "").strip().rstrip("/")
+    if not project_endpoint:
+        return ""
+    agent_name = os.environ.get("AGENT_NAME") or DEFAULT_HOSTED_AGENT_NAME
+    return f"{project_endpoint}/agents/{agent_name}/endpoint/protocols/openai/responses?api-version=v1"
+
 UI_HTML = pathlib.Path(__file__).with_name("ui.html")
+ASSETS_DIR = pathlib.Path(__file__).with_name("assets")
+APP_ICON_ICO = ASSETS_DIR / "app_icon.ico"
+APP_ICON_PNG = ASSETS_DIR / "app_icon.png"
+WINDOW_TITLE = "Project Charter Desktop Agent"
 
 # In local dev the agent's sandbox $HOME is a sibling directory:
 #   <repo>/agent/.charter-agent-home/
@@ -209,7 +245,7 @@ def _save_record(record: AuthenticationRecord) -> None:
     _AUTH_RECORD_PATH.write_text(record.serialize(), encoding="utf-8")
 
 
-def _build_credential(parent_hwnd: int = 0) -> Any:
+def _build_credential(parent_hwnd: int = 0, *, silent_only: bool = False) -> Any:
     """Build the interactive credential used for sign-in.
 
     Prefers `InteractiveBrowserBrokerCredential` (Windows account picker via
@@ -221,6 +257,10 @@ def _build_credential(parent_hwnd: int = 0) -> Any:
     cancels the request immediately when the handle is 0/invalid, so we
     fall back to `GetForegroundWindow()` and then to the browser credential
     when no usable handle is available.
+
+    When `silent_only=True`, the credential is built with
+    `disable_automatic_authentication=True` so `get_token` raises rather than
+    popping a UI prompt — used for startup auto sign-in.
     """
     record = _load_record()
     cache_opts = TokenCachePersistenceOptions(name=AUTH_CACHE_NAME)
@@ -230,6 +270,8 @@ def _build_credential(parent_hwnd: int = 0) -> Any:
     }
     if TENANT_ID:
         common["tenant_id"] = TENANT_ID
+    if silent_only:
+        common["disable_automatic_authentication"] = True
 
     if _BROKER_AVAILABLE and InteractiveBrowserBrokerCredential is not None:
         hwnd = parent_hwnd
@@ -253,6 +295,26 @@ def _build_credential(parent_hwnd: int = 0) -> Any:
 # the client prepends to every outbound prompt.
 
 _PROJECTS_PATH = _APP_HOME / "projects.json"
+# Client-side cache of the latest dashboard payload per (mode, project_id).
+# Used to restore the dashboard on app restart for hosted mode, where the
+# agent's $HOME lives in a Foundry microVM the client can't read directly.
+_VIEW_CACHE_PATH = _APP_HOME / "view_cache.json"
+
+
+def _load_view_cache() -> dict[str, Any]:
+    if not _VIEW_CACHE_PATH.exists():
+        return {}
+    try:
+        return json.loads(_VIEW_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_view_cache(cache: dict[str, Any]) -> None:
+    _VIEW_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _VIEW_CACHE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    tmp.replace(_VIEW_CACHE_PATH)
 
 
 def _gen_project_id() -> str:
@@ -265,13 +327,46 @@ def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
+_MODES = ("local", "hosted")
+
+
+def _empty_projects_store() -> dict[str, Any]:
+    return {
+        "active": {m: None for m in _MODES},
+        "projects": {m: {} for m in _MODES},
+    }
+
+
+def _migrate_projects_store(data: dict[str, Any]) -> dict[str, Any]:
+    """Promote a pre-per-mode flat store to the per-mode shape.
+
+    Old shape: {"active": "p-xxx", "projects": {"p-xxx": {...}}}
+    New shape: {"active": {"local": "p-xxx", "hosted": null}, "projects": {"local": {...}, "hosted": {}}}
+    Existing projects are bucketed under `local` since that's where dev workflows live.
+    """
+    projects = data.get("projects") or {}
+    active = data.get("active")
+    if isinstance(active, dict) and isinstance(projects, dict) and "local" in projects and "hosted" in projects:
+        # Already per-mode; just ensure all keys present.
+        for m in _MODES:
+            projects.setdefault(m, {})
+            active.setdefault(m, None)
+        return {"active": active, "projects": projects}
+    # Flat → per-mode migration.
+    return {
+        "active": {"local": active if isinstance(active, str) else None, "hosted": None},
+        "projects": {"local": projects if isinstance(projects, dict) else {}, "hosted": {}},
+    }
+
+
 def _load_projects() -> dict[str, Any]:
     if not _PROJECTS_PATH.exists():
-        return {"active": None, "projects": {}}
+        return _empty_projects_store()
     try:
-        return json.loads(_PROJECTS_PATH.read_text(encoding="utf-8"))
+        raw = json.loads(_PROJECTS_PATH.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
-        return {"active": None, "projects": {}}
+        return _empty_projects_store()
+    return _migrate_projects_store(raw)
 
 
 def _save_projects(data: dict[str, Any]) -> None:
@@ -373,13 +468,32 @@ def _read_activity_tail(limit: int = 200) -> list[dict[str, Any]]:
     return out
 
 
-def _project_view(pid: str) -> dict[str, Any]:
-    """Build the disk-derived view for a project (dashboard + recent audit)."""
+def _project_view(pid: str, *, mode: str | None = None) -> dict[str, Any]:
+    """Build the view for a project (dashboard + recent audit).
+
+    Prefers the agent's on-disk state under `<AGENT_HOME>/projects/<pid>/`,
+    which is the source of truth in local mode. For hosted mode the agent's
+    `$HOME` lives in a Foundry microVM we can't read directly, so we fall
+    back to the client-side `view_cache.json` populated from the most recent
+    `turn.complete` dashboard payload.
+    """
     log = _read_project_log(pid)
+    dashboard = _dashboard_from_log(log) if log else None
+    activity = _read_activity_tail(200)
+    if dashboard is None and mode:
+        cache = _load_view_cache().get(f"{mode}/{pid}") or {}
+        cached_dash = cache.get("dashboard")
+        if cached_dash:
+            # Tag the cached payload so the UI can show a "stale" indicator
+            # and so the boot handler can decide to auto-refresh.
+            cached_dash = {**cached_dash, "from_cache": True, "saved_at": cache.get("saved_at") or ""}
+            dashboard = cached_dash
+        if not activity:
+            activity = cache.get("activity") or []
     return {
         "project_id": pid,
-        "dashboard": _dashboard_from_log(log) if log else None,
-        "activity": _read_activity_tail(200),
+        "dashboard": dashboard,
+        "activity": activity,
     }
 
 
@@ -397,42 +511,48 @@ class Bridge:
         self.mode: str = initial_mode if initial_mode in self.endpoints else "hosted"
         self._lock = threading.Lock()
 
-        # Load projects from disk; create a starter project if empty so the
-        # UI has something to show. Each project carries its own Foundry
-        # session_id and previous_response_id so switching never crosses
-        # conversation history between RFPs.
+        # Load projects from disk. Projects are scoped per endpoint mode
+        # (local sandboxes vs hosted microVMs are different $HOMEs, so a
+        # project_id created in one never resolves in the other). For the
+        # CURRENT mode only, seed a starter project if none exists so the UI
+        # has something to show. Each project carries its own session_id and
+        # previous_response_id.
         data = _load_projects()
-        if not data.get("projects"):
-            seed = os.environ.get("AGENT_PROJECT_ID") or _gen_project_id()
-            data = {
-                "active": seed,
-                "projects": {
-                    seed: {
-                        "label": "New project",
-                        "customer_name": "",
-                        "session_id": None,
-                        "previous_response_id": None,
-                        "is_new": True,
-                        "created_at": _now_iso(),
-                        "last_used_at": _now_iso(),
-                    }
-                },
-            }
-            _save_projects(data)
-        elif not data.get("active") or data["active"] not in data["projects"]:
-            data["active"] = next(iter(data["projects"]))
-            _save_projects(data)
         self._projects_data = data
+        self._ensure_seeded_for_mode(self.mode)
 
     # ---------- project state shortcuts ----------
 
+    def _mode_projects(self) -> dict[str, Any]:
+        return self._projects_data["projects"].setdefault(self.mode, {})
+
+    def _ensure_seeded_for_mode(self, mode: str) -> None:
+        projects = self._projects_data["projects"].setdefault(mode, {})
+        active_map = self._projects_data["active"]
+        if not projects:
+            pid = (os.environ.get("AGENT_PROJECT_ID") if mode == "local" else None) or _gen_project_id()
+            projects[pid] = {
+                "label": "New project",
+                "customer_name": "",
+                "session_id": None,
+                "previous_response_id": None,
+                "is_new": True,
+                "created_at": _now_iso(),
+                "last_used_at": _now_iso(),
+            }
+            active_map[mode] = pid
+            _save_projects(self._projects_data)
+        elif not active_map.get(mode) or active_map[mode] not in projects:
+            active_map[mode] = next(iter(projects))
+            _save_projects(self._projects_data)
+
     @property
     def project_id(self) -> str:
-        return self._projects_data["active"]
+        return self._projects_data["active"][self.mode]
 
     @property
     def _current(self) -> dict[str, Any]:
-        return self._projects_data["projects"][self.project_id]
+        return self._mode_projects()[self.project_id]
 
     @property
     def session_id(self) -> str | None:
@@ -457,6 +577,7 @@ class Bridge:
     # ---------- lifecycle ----------
 
     def ready(self) -> dict:
+        print(f"[bridge] ready() called mode={self.mode!r} url={self.endpoints.get(self.mode, '')!r}", flush=True)
         return {
             "endpoints": self.endpoints,
             "mode": self.mode,
@@ -465,9 +586,37 @@ class Bridge:
             "tenant_id": TENANT_ID,
             "scope": SCOPE,
             "user_name": self.user_name,
+            "has_record": self._record_saved,
             "projects": self._projects_payload(),
-            "view": _project_view(self.project_id),
+            "view": _project_view(self.project_id, mode=self.mode),
         }
+
+    def signin_silent(self) -> dict:
+        """Attempt a non-interactive sign-in using the persisted AuthenticationRecord.
+
+        Returns `{ok: True, user_name, expires_on}` if the cached refresh token
+        produced a fresh access token without user interaction. Returns
+        `{ok: False, ...}` if no record exists or the silent flow would require
+        a popup (in which case the UI keeps the "signed out" state and the user
+        must click Sign in).
+        """
+        if not self._record_saved:
+            return {"ok": False, "error": "no saved authentication record"}
+        try:
+            silent_cred = _build_credential(self._parent_hwnd(), silent_only=True)
+            tok = silent_cred.get_token(SCOPE)
+        except Exception as e:  # noqa: BLE001
+            print(f"[bridge] signin_silent failed: {e}", flush=True)
+            return {"ok": False, "error": str(e)}
+        # Don't cache the silent-only credential into self._credential: a later
+        # token refresh might genuinely need to pop the WAM picker, and the
+        # silent-only flag would suppress that. Next login() will lazily build
+        # a regular interactive credential.
+        self.token = tok.token
+        self.token_expires_at = float(tok.expires_on)
+        self.user_name = _decode_jwt_name(tok.token)
+        print(f"[bridge] signin_silent ok user={self.user_name!r}", flush=True)
+        return {"ok": True, "expires_on": int(tok.expires_on), "user_name": self.user_name}
 
     # ---------- projects API ----------
 
@@ -477,11 +626,11 @@ class Bridge:
         Used by the UI to restore state on switch / boot without a model turn.
         """
         pid = project_id or self.project_id
-        return {"ok": True, **_project_view(pid)}
+        return {"ok": True, **_project_view(pid, mode=self.mode)}
 
     def _projects_payload(self) -> dict[str, Any]:
         ordered = sorted(
-            self._projects_data["projects"].items(),
+            self._mode_projects().items(),
             key=lambda kv: kv[1].get("last_used_at") or kv[1].get("created_at") or "",
             reverse=True,
         )
@@ -504,7 +653,7 @@ class Bridge:
 
     def new_project(self, label: str = "") -> dict:
         pid = _gen_project_id()
-        self._projects_data["projects"][pid] = {
+        self._mode_projects()[pid] = {
             "label": label.strip() or "New project",
             "customer_name": "",
             "session_id": None,
@@ -513,14 +662,15 @@ class Bridge:
             "created_at": _now_iso(),
             "last_used_at": _now_iso(),
         }
-        self._projects_data["active"] = pid
+        self._projects_data["active"][self.mode] = pid
         _save_projects(self._projects_data)
-        return {"ok": True, "active": pid, "view": _project_view(pid), **self._projects_payload()}
+        return {"ok": True, "active": pid, "view": _project_view(pid, mode=self.mode), **self._projects_payload()}
 
     def switch_project(self, project_id: str) -> dict:
-        if project_id not in self._projects_data["projects"]:
+        projects = self._mode_projects()
+        if project_id not in projects:
             return {"ok": False, "error": f"unknown project_id: {project_id}"}
-        self._projects_data["active"] = project_id
+        self._projects_data["active"][self.mode] = project_id
         self._current["last_used_at"] = _now_iso()
         _save_projects(self._projects_data)
         return {
@@ -528,19 +678,20 @@ class Bridge:
             "active": project_id,
             "session_id": self.session_id,
             "previous_response_id": self.previous_response_id,
-            "view": _project_view(project_id),
+            "view": _project_view(project_id, mode=self.mode),
             **self._projects_payload(),
         }
 
     def rename_project(self, project_id: str, label: str) -> dict:
-        if project_id not in self._projects_data["projects"]:
+        projects = self._mode_projects()
+        if project_id not in projects:
             return {"ok": False, "error": f"unknown project_id: {project_id}"}
-        self._projects_data["projects"][project_id]["label"] = label.strip() or "New project"
+        projects[project_id]["label"] = label.strip() or "New project"
         _save_projects(self._projects_data)
         return {"ok": True, **self._projects_payload()}
 
     def delete_project(self, project_id: str) -> dict:
-        projects = self._projects_data["projects"]
+        projects = self._mode_projects()
         if project_id not in projects:
             return {"ok": False, "error": f"unknown project_id: {project_id}"}
         del projects[project_id]
@@ -555,11 +706,11 @@ class Bridge:
                 "created_at": _now_iso(),
                 "last_used_at": _now_iso(),
             }
-            self._projects_data["active"] = pid
-        elif self._projects_data["active"] == project_id:
-            self._projects_data["active"] = next(iter(projects))
+            self._projects_data["active"][self.mode] = pid
+        elif self._projects_data["active"][self.mode] == project_id:
+            self._projects_data["active"][self.mode] = next(iter(projects))
         _save_projects(self._projects_data)
-        return {"ok": True, "active": self._projects_data["active"], **self._projects_payload()}
+        return {"ok": True, "active": self._projects_data["active"][self.mode], **self._projects_payload()}
 
     def set_mode(self, mode: str) -> dict:
         if mode not in self.endpoints:
@@ -567,15 +718,17 @@ class Bridge:
         if not self.endpoints[mode]:
             return {"ok": False, "error": f"endpoint for mode={mode!r} is not configured"}
         self.mode = mode
-        # Wipe per-project session state across the board — endpoint change
-        # invalidates server-side session ids.
-        for p in self._projects_data["projects"].values():
-            p["session_id"] = None
-            p["previous_response_id"] = None
-        _save_projects(self._projects_data)
-        return {"ok": True, "mode": mode, "agent_url": self.endpoints[mode]}
+        self._ensure_seeded_for_mode(mode)
+        return {
+            "ok": True,
+            "mode": mode,
+            "agent_url": self.endpoints[mode],
+            "projects": self._projects_payload(),
+            "view": _project_view(self.project_id, mode=self.mode),
+        }
 
     def login(self) -> dict:
+        print("[bridge] login() called — invoking credential.get_token", flush=True)
         try:
             if self._credential is None:
                 self._credential = _build_credential(self._parent_hwnd())
@@ -798,7 +951,66 @@ class Bridge:
         })
         # Refresh the disk-derived view (activity audit + canonical dashboard
         # from project_log.json) so the UI matches the agent's source of truth.
-        self._emit("view.update", _project_view(self.project_id))
+        view = _project_view(self.project_id, mode=self.mode)
+        # If this turn produced a fresh dashboard, treat it as live state —
+        # overrides whatever stale cache `_project_view` may have returned for
+        # hosted mode, and strips any from_cache/saved_at markers.
+        if dashboard:
+            live_dash = {k: v for k, v in dashboard.items() if k not in ("from_cache", "saved_at")}
+            view["dashboard"] = live_dash
+        # Persist the latest dashboard + activity to the client-side cache so
+        # the UI can restore them on app restart (essential for hosted mode
+        # where the agent's $HOME is inside an inaccessible Foundry microVM).
+        cache_dashboard = view.get("dashboard")
+        if cache_dashboard:
+            # Don't store the staleness markers — saved_at is the cache's own field.
+            cache_dashboard = {k: v for k, v in cache_dashboard.items() if k not in ("from_cache", "saved_at")}
+        if cache_dashboard or view.get("activity"):
+            try:
+                cache = _load_view_cache()
+                cache[f"{self.mode}/{self.project_id}"] = {
+                    "dashboard": cache_dashboard,
+                    "activity": view.get("activity") or [],
+                    "saved_at": _now_iso(),
+                }
+                _save_view_cache(cache)
+            except Exception as ex:  # noqa: BLE001
+                logger.debug("view cache write failed: %s", ex)
+        self._emit("view.update", view)
+
+
+def _set_taskbar_icon(hwnd: int) -> None:
+    """Override the default pythonw.exe taskbar/title-bar icon with app_icon.ico."""
+    if not hwnd or sys.platform != "win32" or not APP_ICON_ICO.exists():
+        logger.info("icon: skipped (hwnd=%s, exists=%s)", hwnd, APP_ICON_ICO.exists())
+        return
+    try:
+        user32 = ctypes.windll.user32
+        # Declare 64-bit-safe signatures so HICON handles aren't truncated.
+        user32.LoadImageW.restype = ctypes.c_void_p
+        user32.LoadImageW.argtypes = [
+            ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint,
+            ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+        ]
+        user32.SendMessageW.restype = ctypes.c_void_p
+        user32.SendMessageW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        WM_SETICON = 0x0080
+        ICON_BIG, ICON_SMALL = 1, 0
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x0010
+        ico = str(APP_ICON_ICO)
+        hicon_big = user32.LoadImageW(None, ico, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+        hicon_small = user32.LoadImageW(None, ico, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        print(f"[icon] hwnd=0x{hwnd:x} big={hicon_big} small={hicon_small} ico={ico}", flush=True)
+        logger.info("icon: hwnd=0x%x big=%s small=%s file=%s", hwnd, hicon_big, hicon_small, ico)
+        if hicon_big:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+        if hicon_small:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+    except Exception as ex:  # noqa: BLE001
+        logger.warning("taskbar icon set failed: %s", ex)
 
 
 def main() -> int:
@@ -807,10 +1019,14 @@ def main() -> int:
     p.add_argument("--local-url", default=os.environ.get("AGENT_ENDPOINT_LOCAL", DEFAULT_LOCAL))
     p.add_argument(
         "--hosted-url",
-        default=os.environ.get("AGENT_ENDPOINT_HOSTED") or os.environ.get("AGENT_RESPONSES_URL", ""),
-        help="URL of the deployed Foundry-hosted agent's /responses endpoint.",
+        default=None,
+        help="URL of the deployed Foundry-hosted agent's /responses endpoint. "
+             "Defaults to AGENT_ENDPOINT_HOSTED/AGENT_RESPONSES_URL, else constructed from FOUNDRY_PROJECT_ENDPOINT.",
     )
     args = p.parse_args()
+    _load_agent_env()
+    if not args.hosted_url:
+        args.hosted_url = _resolve_hosted_url()
 
     if args.mode == "hosted" and not args.hosted_url:
         print("[warn] AGENT_ENDPOINT_HOSTED not set; starting in 'local' mode.", file=sys.stderr)
@@ -821,8 +1037,18 @@ def main() -> int:
         return 1
 
     bridge = Bridge(local_url=args.local_url, hosted_url=args.hosted_url, initial_mode=args.mode)
+
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "Microsoft.WorkIQ.CharterAgent.Desktop"
+            )
+        except Exception as ex:  # noqa: BLE001
+            logger.debug("AppUserModelID set failed: %s", ex)
+
+    icon_path = APP_ICON_PNG if APP_ICON_PNG.exists() else (APP_ICON_ICO if APP_ICON_ICO.exists() else None)
     window = webview.create_window(
-        "Project Charter Desktop Agent",
+        WINDOW_TITLE,
         url=str(UI_HTML),
         js_api=bridge,
         width=1280,
@@ -832,17 +1058,28 @@ def main() -> int:
     bridge.window = window
 
     def _on_started() -> None:
-        # Register the pywebview HWND so the WAM account picker is parented to
-        # our window instead of floating loose. FindWindowW by title is the
-        # most portable way across pywebview versions.
-        if sys.platform == "win32":
-            try:
-                hwnd = ctypes.windll.user32.FindWindowW(None, "Project Charter Desktop Agent")
-                _set_parent_hwnd(int(hwnd))
-            except Exception as ex:  # noqa: BLE001
-                logger.debug("auth: HWND lookup failed: %s", ex)
+        if sys.platform != "win32":
+            return
 
-    webview.start(_on_started, debug=False)
+        def _worker() -> None:
+            try:
+                user32 = ctypes.windll.user32
+                user32.FindWindowW.restype = ctypes.c_void_p
+                user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+                hwnd = 0
+                for _ in range(40):  # up to ~4s
+                    hwnd = user32.FindWindowW(None, WINDOW_TITLE) or 0
+                    if hwnd:
+                        break
+                    time.sleep(0.1)
+                print(f"[startup] hwnd=0x{hwnd:x} title={WINDOW_TITLE!r}", flush=True)
+                _set_taskbar_icon(int(hwnd))
+            except Exception as ex:  # noqa: BLE001
+                print(f"[startup] hook failed: {ex}", flush=True)
+
+        threading.Thread(target=_worker, name="taskbar-icon", daemon=True).start()
+
+    webview.start(_on_started, gui="edgechromium", debug=False)
     return 0
 
 
