@@ -312,6 +312,67 @@ For each phase, the agent doing the work should:
 - **`FOUNDRY_` env var prefix is reserved** by the platform and may be silently overwritten. Name internal env vars without that prefix — e.g. `TOOLBOX_MCP_ENDPOINT`, not `FOUNDRY_TOOLBOX_ENDPOINT`.
 - **Build for `linux/amd64`.** Foundry hosted agents reject other architectures. Use `azd deploy` (ACR remote build) or `docker build --platform=linux/amd64 …` on Apple Silicon.
 
+### 9.1 Responses-on-Foundry: the two-key model (load-bearing)
+
+Single biggest source of confusion for any new feature that touches session lifecycle, retry, or resume. Read before editing `desktop-client/app.py::_post_one` or anything that mints / forwards IDs.
+
+There are **two orthogonal identifiers** on every Responses turn:
+
+| Key | Backed by | Lifetime | Loses on |
+|---|---|---|---|
+| `agent_session_id` (body `extra_body={"agent_session_id": …}`) | **Persistent Foundry microVM + `$HOME`** (`project_charter.md`, `project_log.json`, `activity.json`, `agent_session/<id>.json`) | Up to 30 days; 15-min idle deprovisions compute but preserves state | Foundry idle-reap (>30d or platform GC) |
+| `previous_response_id` (body field) | **In-memory transcript store** in the Responses host (`InMemoryResponseProvider`) — message history only | Process lifetime of the agent container | Container restart (deploy, scale-in, crash) |
+
+The microVM survives container restarts within the 30-day window; the in-memory transcript does not. **Never conflate them.**
+
+**Silent empty-completion failure mode.** When the client sends a `previous_response_id` whose transcript has rolled, the hosted endpoint returns **200 OK** with `response.created` → `response.in_progress` → `response.completed` and zero `output_text` / `function_call` events. No error, no exception. The UI looks hung. Easy to misdiagnose as a network or auth issue — it is neither.
+
+**Correct recovery (in `_post_one`):** on stream-done, if `previous_response_id` was sent AND no consent payload AND no final text AND event count ≤ 4, retry the same prompt with `previous_response_id=None` and **the same `session_id`**. Clearing `session_id` in the retry orphans the user's microVM and forces a `first_run`, silently losing the entire sandbox pointer.
+
+**Server-side has no role here.** The Foundry agentserver mounts the right per-session `$HOME` before our code runs. `runtime/state_tools.py` just reads `state.home_dir()`. Do not add session-handling code in the agent runtime; the client is solely responsible for sending the right `agent_session_id` on every POST.
+
+### 9.2 Cross-endpoint isolation: local and hosted are different worlds
+
+Every project is keyed by `(mode, project_id)` where `mode ∈ {local, hosted}`. The two modes share **nothing** — separate agent process / microVM, separate `$HOME`, separate `session_id`, separate `previous_response_id`. The same human project name can exist in both worlds with independent state.
+
+**Required client behavior on endpoint switch** (`set_mode` + UI mode handler):
+
+1. Clear transcript DOM, activity DOM, `currentAgentMsg`, `shownPhaseCards` (via `clearTranscript()` / `clearActivity()`).
+2. Reset transient IDs (`self.session_id = None; self.previous_response_id = None`); they're then reloaded from the new mode's active project via the `_current` property.
+3. Re-bind active project from `projects[mode][active_pid]`.
+
+Skip (1) → previous endpoint's transcript bleeds into the new view. Skip (2) → stale `session_id` from the other mode gets sent to the new endpoint → server rejects → UI hangs ("shimmer then nothing").
+
+### 9.3 Where project state actually lives — local vs hosted asymmetry
+
+- **Local mode**: client reads `<AGENT_HOME>/projects/<pid>/project_log.json` directly from the local filesystem (`desktop-client/app.py::_read_project_log`) — fast dashboard repaint with no agent round-trip.
+- **Hosted mode**: same file lives inside the Foundry microVM — client **cannot** read it. Only path is to POST a prompt and have the skill (running in the microVM) read its own `project_log.json` and emit a `dashboard_payload`.
+
+If `desktop-client/app.py` references `project_log.json`, it's local-only. If `agent/skills/sow-response/SKILL.md` references it, it's the canonical producer/reader. Both are intentional. Do not "unify" them — they read different filesystems.
+
+### 9.4 Multi-project parallelism
+
+- Each project's `agent_session_id` resolves to its own `$HOME` subtree (local) or its own microVM (hosted). Concurrent posts to different sessions don't interfere.
+- Hosted sessions can be idle-reaped silently; the only signal is the next post returning `first_run` (skill sees no `project_log.json`). A "session expired, re-kickoff?" UX path is not yet implemented.
+- The desktop client foregrounds one project at a time. For true client-side parallelism, open multiple instances.
+- **Never copy `session_id` across projects.** Each project mints/stores its own; reusing one ID for two projects merges their state.
+
+### 9.5 Client-side state file (`~/.charter-agent/projects.json`)
+
+Pointer index keyed by mode → project_id → `{label, customer_name, session_id, previous_response_id, is_new, created_at, last_used_at}`. **Pointer only — not state.** Losing a `session_id` here doesn't lose the project's data (still in the microVM), but it does orphan the pointer and force re-kickoff unless the old id can be recovered from logs.
+
+**Don't write this file from PowerShell 5 with `Set-Content -Encoding utf8`** — it prepends a UTF-8 BOM, the client's `_load_projects` raises on `json.loads`, the except clause returns an empty store, and the user's entire project list appears wiped. Use `[System.IO.File]::WriteAllText($p, $json, (New-Object System.Text.UTF8Encoding $false))`. Verify first 3 bytes are `{`/`\r`/`\n` (`123, 13, 10`), never `EF BB BF`.
+
+### 9.6 Runtime state files must stay out of git
+
+- `.gitignore` only suppresses **untracked** paths. Files committed before a rule was added remain tracked and show up modified on every save.
+- Parent-directory ignore patterns (`**/.charter-agent-home/`) don't retroactively untrack children. Use `git rm -r --cached <dir>` once, then commit the deletion.
+- Explicit per-file patterns belong alongside the parent dir rule: `**/project_log.json`, `**/project_charter.md`, `**/projects.json`, `**/activity.json`, `**/state.json`, `**/charter.json`, `**/agent_session/`. Catches the file even when a smoke writes it outside the canonical `$HOME`.
+
+### 9.7 Keep the bridge debug logs
+
+The `[bridge] POST … session=… prev_resp=…` / `[bridge] <- status=… ct=…` / `[bridge] evt#N type=…` / `[bridge] stream done: events=N response_id=… text_parts=N consent=…` lines in `desktop-client/app.py::_post_one` are how every one of the silent failure modes above gets diagnosed in one pass. Do not strip them when "cleaning up."
+
 ---
 
 ## 10. What this project deliberately is not
