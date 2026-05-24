@@ -501,7 +501,11 @@ class Bridge:
     """JS-callable surface exposed to the WebView via pywebview's js_api."""
 
     def __init__(self, *, local_url: str, hosted_url: str, initial_mode: str) -> None:
-        self.window: webview.Window | None = None
+        # Leading underscore is load-bearing: pywebview's js_api reflector (util.py
+        # get_functions) descends into any non-underscore attribute and would walk
+        # the WinForms Form -> AccessibilityObject -> Rectangle.Empty.Empty... loop
+        # until Python's recursion limit aborts mid-injection and hangs the bridge.
+        self._window: webview.Window | None = None
         self.token: str | None = None
         self.token_expires_at: float = 0.0
         self.user_name: str | None = None
@@ -717,6 +721,11 @@ class Bridge:
             return {"ok": False, "error": f"unknown mode: {mode}"}
         if not self.endpoints[mode]:
             return {"ok": False, "error": f"endpoint for mode={mode!r} is not configured"}
+        # session_id and previous_response_id are tied to the endpoint that
+        # minted them; carrying them across a mode switch makes the new endpoint
+        # reject the next request (unknown previous_response_id / session).
+        self.session_id = None
+        self.previous_response_id = None
         self.mode = mode
         self._ensure_seeded_for_mode(mode)
         return {
@@ -797,7 +806,7 @@ class Bridge:
         0 if the window is not yet realized or the backend doesn't expose
         a handle — callers should fall back to `GetForegroundWindow()`.
         """
-        win = self.window
+        win = self._window
         if win is None:
             return 0
         native = getattr(win, "native", None)
@@ -810,11 +819,11 @@ class Bridge:
             return 0
 
     def _emit(self, event: str, payload: dict | None = None) -> None:
-        if not self.window:
+        if not self._window:
             return
         msg = json.dumps({"event": event, "payload": payload or {}})
         try:
-            self.window.evaluate_js(f"window.onAgentEvent && window.onAgentEvent({msg})")
+            self._window.evaluate_js(f"window.onAgentEvent && window.onAgentEvent({msg})")
         except Exception as e:  # noqa: BLE001
             print(f"[bridge] evaluate_js failed: {e}", file=sys.stderr)
 
@@ -850,14 +859,22 @@ class Bridge:
         consent_payload: dict | None = None
         current_tool: dict[str, str] | None = None
 
+        print(f"[bridge] POST {url} session={self.session_id} prev_resp={previous_response_id}", flush=True)
         with httpx.Client(timeout=HTTP_TIMEOUT) as client:
             with client.stream("POST", url, json=body, headers=headers) as resp:
+                print(f"[bridge] <- status={resp.status_code} ct={resp.headers.get('content-type')}", flush=True)
                 if resp.status_code >= 400:
                     err = resp.read().decode("utf-8", errors="replace")
+                    print(f"[bridge] error body: {err[:2000]}", flush=True)
                     self._emit("turn.error", {"error": f"HTTP {resp.status_code}: {err[:2000]}"})
                     return
+                event_count = 0
                 for evt in _iter_sse_events(resp):
+                    event_count += 1
                     data = evt["data"]
+                    etype_dbg = (data.get("type") if isinstance(data, dict) else None) or evt.get("event")
+                    if event_count <= 5 or event_count % 25 == 0:
+                        print(f"[bridge] evt#{event_count} type={etype_dbg}", flush=True)
                     if not isinstance(data, dict):
                         continue
                     etype = data.get("type") or evt["event"]
@@ -916,9 +933,32 @@ class Bridge:
                         self._emit("turn.error", {"error": f"{etype}: {json.dumps(data)[:1500]}"})
                         return
 
+        print(f"[bridge] stream done: events={event_count} response_id={response_id} text_parts={len(completed_text_parts)} consent={consent_payload is not None}", flush=True)
         final_text = "\n".join(completed_text_parts).strip()
         if response_id:
             self.previous_response_id = response_id
+
+        # The hosted Responses server uses an in-memory transcript store; a
+        # container restart silently invalidates every saved
+        # previous_response_id and the next request comes back 200 with an
+        # empty completion (no tool calls, no text). Detect that and retry
+        # once from a clean slate so the user sees output instead of nothing.
+        #
+        # IMPORTANT: only drop previous_response_id, NOT agent_session_id.
+        # The session id keys the persistent Foundry microVM + $HOME (charter,
+        # project_log, etc.) and survives container restarts within the
+        # session's lifetime. previous_response_id keys the in-memory
+        # transcript and is the thing that just rolled.
+        if (
+            previous_response_id
+            and not consent_payload
+            and not final_text
+            and event_count <= 4
+        ):
+            print("[bridge] empty completion w/ stale prev_resp; retrying without it (keeping session)", flush=True)
+            self.previous_response_id = None
+            self._post_one(prompt, url=url, previous_response_id=None)
+            return
 
         if consent_payload:
             url2 = _extract_consent_url(consent_payload)
@@ -1023,6 +1063,7 @@ def main() -> int:
         help="URL of the deployed Foundry-hosted agent's /responses endpoint. "
              "Defaults to AGENT_ENDPOINT_HOSTED/AGENT_RESPONSES_URL, else constructed from FOUNDRY_PROJECT_ENDPOINT.",
     )
+    p.add_argument("--debug", action="store_true", help="Open WebView2 DevTools (right-click → Inspect) and verbose logging.")
     args = p.parse_args()
     _load_agent_env()
     if not args.hosted_url:
@@ -1055,7 +1096,7 @@ def main() -> int:
         height=860,
         min_size=(960, 640),
     )
-    bridge.window = window
+    bridge._window = window
 
     def _on_started() -> None:
         if sys.platform != "win32":
@@ -1079,7 +1120,7 @@ def main() -> int:
 
         threading.Thread(target=_worker, name="taskbar-icon", daemon=True).start()
 
-    webview.start(_on_started, gui="edgechromium", debug=False)
+    webview.start(_on_started, gui="edgechromium", debug=args.debug)
     return 0
 
 

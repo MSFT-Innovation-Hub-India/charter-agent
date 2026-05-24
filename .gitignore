@@ -106,6 +106,9 @@ frontend/ui/build/
 **/activity.json
 **/state.json
 **/charter.json
+**/project_log.json
+**/project_charter.md
+**/projects.json
 
 # Local install / pip logs
 install.log

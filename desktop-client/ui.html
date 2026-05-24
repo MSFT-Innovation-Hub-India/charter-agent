@@ -1286,7 +1286,13 @@ modeSelect.addEventListener("change", async () => {
     setEndpoint(ctx.mode, ctx.agent_url);
     return;
   }
+  // Endpoint switch: drop UI state tied to the previous endpoint's session.
+  // session_id / previous_response_id are minted per-endpoint and don't
+  // transfer; the bridge already cleared them, so wipe the transcript +
+  // activity here too or the previous conversation bleeds into the new view.
   setSession(null);
+  clearTranscript();
+  clearActivity();
   setEndpoint(r.mode, r.agent_url);
   if (r.projects) renderProjects(r.projects);
   if (r.view) {
