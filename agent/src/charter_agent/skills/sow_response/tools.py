@@ -21,6 +21,12 @@ from agent_framework import tool  # type: ignore[import-not-found]
 from ... import state
 from ...observability import log_activity
 
+# The skill stamps its own name into `project_log.json` at kickoff so the
+# desktop client can tag the project in its sidebar without guessing. When a
+# second skill ships, it follows the same pattern (its own kickoff tool
+# writes a different value here).
+SKILL_NAME = "sow-response"
+
 # Project files live under `projects/<active_project_id>/`. The desktop client
 # names the active project via a context preamble on every turn; the skill
 # calls `set_active_project` before any other tool so these helpers resolve
@@ -155,8 +161,27 @@ def load_project_state() -> dict[str, Any]:
           "charter_exists": <bool>}`.
     """
     log = _read_log()
+    if log is None:
+        # First-run: stamp a minimal stub so the desktop client's sidebar can
+        # tag the project with this skill's name immediately, without waiting
+        # for `start_charter` to land much later in the turn. `start_charter`
+        # treats the stub as absent and overwrites it.
+        stub = {
+            "project_id": state.active_project_id(),
+            "skill": SKILL_NAME,
+            "status": "initializing",
+            "tasks": [],
+            "log_entries": [],
+        }
+        _write_log(stub)
+        return {
+            "mode": "first_run",
+            "project_log": None,
+            "charter_exists": state.exists(_charter_path()),
+            "active_project_id": state.active_project_id(),
+        }
     return {
-        "mode": "resume" if log is not None else "first_run",
+        "mode": "resume",
         "project_log": log,
         "charter_exists": state.exists(_charter_path()),
         "active_project_id": state.active_project_id(),
@@ -196,11 +221,16 @@ def start_charter(
         grounding_source_note: one-line note about what was grounded. Empty if N/A.
     """
     if state.exists(_log_path()):
-        return {
-            "status": "error",
-            "reason": "already_exists",
-            "message": "project_log.json already exists; this is a resume-mode session.",
-        }
+        existing = _read_log() or {}
+        # `load_project_state` writes a `status:"initializing"` stub on first
+        # run so the desktop client can tag the sidebar with this skill's name
+        # immediately. That stub is not a real charter — overwrite it.
+        if existing.get("status") != "initializing":
+            return {
+                "status": "error",
+                "reason": "already_exists",
+                "message": "project_log.json already exists; this is a resume-mode session.",
+            }
 
     now = _now_iso()
     grounding_sources: list[dict[str, Any]] = []
@@ -217,6 +247,7 @@ def start_charter(
     log: dict[str, Any] = {
         "project_id": project_id,
         "project_kind": "sow_response",
+        "skill": SKILL_NAME,
         "version": 1,
         "created_at": now,
         "sow_owner_upn": sow_owner_upn,
@@ -559,6 +590,7 @@ def dashboard_payload() -> dict[str, Any]:
         "kind": "dashboard",
         "project": log.get("project_id"),
         "customer": log.get("customer_name"),
+        "skill": log.get("skill"),
         "status": log.get("status"),
         "summary": "",
         "due": earliest_unmet_due or "",

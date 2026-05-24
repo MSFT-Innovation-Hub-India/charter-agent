@@ -50,6 +50,7 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import sys
 import threading
 import time
@@ -437,6 +438,7 @@ def _dashboard_from_log(log: dict[str, Any]) -> dict[str, Any]:
         "kind": "dashboard",
         "project": log.get("project_id"),
         "customer": log.get("customer_name"),
+        "skill": log.get("skill"),
         "status": log.get("status"),
         "summary": "",
         "due": earliest_unmet_due or "",
@@ -530,6 +532,28 @@ class Bridge:
     def _mode_projects(self) -> dict[str, Any]:
         return self._projects_data["projects"].setdefault(self.mode, {})
 
+    def _sync_skill_from_view(self, view: dict[str, Any] | None) -> bool:
+        """Promote the agent-declared `skill` from a view's dashboard onto the
+        active project record. Returns True if the record changed (caller can
+        decide whether to re-emit `projects.update`).
+
+        The skill name is owned by the agent: the chosen skill writes it into
+        `project_log.json` at kickoff. We mirror it client-side only so the
+        sidebar can render the tag without doing a fresh disk read on every
+        repaint. Never invented client-side.
+        """
+        if not view:
+            return False
+        dash = view.get("dashboard") or {}
+        skill_name = (dash.get("skill") or "").strip()
+        if not skill_name:
+            return False
+        if self._current.get("skill") == skill_name:
+            return False
+        self._current["skill"] = skill_name
+        _save_projects(self._projects_data)
+        return True
+
     def _ensure_seeded_for_mode(self, mode: str) -> None:
         projects = self._projects_data["projects"].setdefault(mode, {})
         active_map = self._projects_data["active"]
@@ -582,6 +606,8 @@ class Bridge:
 
     def ready(self) -> dict:
         print(f"[bridge] ready() called mode={self.mode!r} url={self.endpoints.get(self.mode, '')!r}", flush=True)
+        view = _project_view(self.project_id, mode=self.mode)
+        self._sync_skill_from_view(view)
         return {
             "endpoints": self.endpoints,
             "mode": self.mode,
@@ -592,7 +618,7 @@ class Bridge:
             "user_name": self.user_name,
             "has_record": self._record_saved,
             "projects": self._projects_payload(),
-            "view": _project_view(self.project_id, mode=self.mode),
+            "view": view,
         }
 
     def signin_silent(self) -> dict:
@@ -633,9 +659,13 @@ class Bridge:
         return {"ok": True, **_project_view(pid, mode=self.mode)}
 
     def _projects_payload(self) -> dict[str, Any]:
+        # Stable order: newest-created first. Clicking a project must not move
+        # it in the list — that was disorienting. `last_used_at` still gets
+        # bumped on every interaction for downstream diagnostics, but it no
+        # longer drives sort order.
         ordered = sorted(
             self._mode_projects().items(),
-            key=lambda kv: kv[1].get("last_used_at") or kv[1].get("created_at") or "",
+            key=lambda kv: kv[1].get("created_at") or "",
             reverse=True,
         )
         return {
@@ -645,7 +675,9 @@ class Bridge:
                     "id": pid,
                     "label": p.get("label") or "New project",
                     "customer_name": p.get("customer_name") or "",
+                    "skill": p.get("skill") or "",
                     "is_new": bool(p.get("is_new")),
+                    "created_at": p.get("created_at") or "",
                     "last_used_at": p.get("last_used_at") or "",
                 }
                 for pid, p in ordered
@@ -677,12 +709,14 @@ class Bridge:
         self._projects_data["active"][self.mode] = project_id
         self._current["last_used_at"] = _now_iso()
         _save_projects(self._projects_data)
+        view = _project_view(project_id, mode=self.mode)
+        self._sync_skill_from_view(view)
         return {
             "ok": True,
             "active": project_id,
             "session_id": self.session_id,
             "previous_response_id": self.previous_response_id,
-            "view": _project_view(project_id, mode=self.mode),
+            "view": view,
             **self._projects_payload(),
         }
 
@@ -694,10 +728,71 @@ class Bridge:
         _save_projects(self._projects_data)
         return {"ok": True, **self._projects_payload()}
 
+    def _delete_local_project_dir(self, project_id: str) -> None:
+        """Best-effort rmtree of `<AGENT_HOME>/projects/<pid>/`."""
+        target = (_AGENT_HOME / "projects" / project_id).resolve()
+        try:
+            base = (_AGENT_HOME / "projects").resolve()
+            # Refuse to delete anything outside the agent's projects subtree.
+            target.relative_to(base)
+        except Exception as ex:  # noqa: BLE001
+            print(f"[bridge] delete_local refused {project_id!r}: {ex}", flush=True)
+            return
+        if not target.is_dir():
+            return
+        try:
+            shutil.rmtree(target)
+            print(f"[bridge] delete_local removed {target}", flush=True)
+        except Exception as ex:  # noqa: BLE001
+            print(f"[bridge] delete_local failed for {target}: {ex}", flush=True)
+
+    def _delete_hosted_session(self, session_id: str) -> None:
+        """Best-effort DELETE of the Foundry agentserver session microVM.
+
+        The agentserver exposes session lifecycle at
+        `<agent-endpoint-base>/agent-sessions/{id}?api-version=v1`. If that
+        path doesn't match (preview API drift), we swallow the error — the
+        microVM will idle-reap in <=30 days regardless. Pointer cleanup in
+        `delete_project` does not depend on this call succeeding.
+        """
+        url = self.endpoints.get("hosted") or ""
+        if not url:
+            return
+        # Strip `/protocols/openai/responses[?...]` to get the agent endpoint base.
+        base = re.sub(r"/protocols/openai/responses(\?.*)?$", "", url)
+        token = self.token
+        if not token:
+            print(f"[bridge] delete_hosted skipped (no token) session={session_id}", flush=True)
+            return
+        candidates = [
+            f"{base}/agent-sessions/{session_id}?api-version=v1",
+            f"{base}/sessions/{session_id}?api-version=v1",
+        ]
+        for candidate in candidates:
+            try:
+                with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
+                    resp = client.delete(
+                        candidate,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                print(f"[bridge] delete_hosted {resp.status_code} {candidate}", flush=True)
+                if resp.status_code in (200, 202, 204, 404):
+                    return  # 404 = already gone, treat as success
+            except Exception as ex:  # noqa: BLE001
+                print(f"[bridge] delete_hosted error {candidate}: {ex}", flush=True)
+
     def delete_project(self, project_id: str) -> dict:
         projects = self._mode_projects()
         if project_id not in projects:
             return {"ok": False, "error": f"unknown project_id: {project_id}"}
+        record = dict(projects[project_id])
+        # Hard-delete agent-side state first; pointer removal happens regardless.
+        if self.mode == "local":
+            self._delete_local_project_dir(project_id)
+        else:
+            sid = record.get("session_id")
+            if sid:
+                self._delete_hosted_session(str(sid))
         del projects[project_id]
         if not projects:
             pid = _gen_project_id()
@@ -973,13 +1068,23 @@ class Bridge:
                 return
 
         dashboard = _maybe_extract_dashboard(final_text)
-        # Learn the customer name + status from the dashboard so the sidebar label is meaningful.
+        # Learn the customer name + skill from the dashboard so the sidebar reflects
+        # what the agent actually decided. The skill name is the agent's declaration
+        # (written into project_log.json by the chosen skill's kickoff tool); we never
+        # default it client-side.
         if dashboard:
+            mutated = False
             customer = dashboard.get("customer") or ""
             if customer and customer != self._current.get("customer_name"):
                 self._current["customer_name"] = customer
                 if (self._current.get("label") or "").lower() in ("", "new project"):
                     self._current["label"] = customer
+                mutated = True
+            skill_name = dashboard.get("skill") or ""
+            if skill_name and skill_name != self._current.get("skill"):
+                self._current["skill"] = skill_name
+                mutated = True
+            if mutated:
                 _save_projects(self._projects_data)
                 self._emit("projects.update", self._projects_payload())
         self._emit("turn.complete", {
@@ -992,6 +1097,8 @@ class Bridge:
         # Refresh the disk-derived view (activity audit + canonical dashboard
         # from project_log.json) so the UI matches the agent's source of truth.
         view = _project_view(self.project_id, mode=self.mode)
+        if self._sync_skill_from_view(view):
+            self._emit("projects.update", self._projects_payload())
         # If this turn produced a fresh dashboard, treat it as live state —
         # overrides whatever stale cache `_project_view` may have returned for
         # hosted mode, and strips any from_cache/saved_at markers.

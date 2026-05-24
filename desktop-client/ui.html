@@ -225,8 +225,15 @@
     background: rgba(9, 105, 218, 0.08);
     border-left-color: var(--accent);
   }
-  .proj-item .label { font-size: 13px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proj-item .label { font-size: 13px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .proj-item .date { font-size: 10px; color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
   .proj-item .sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proj-item .skill-tag {
+    display: inline-block;
+    font-size: 10px; line-height: 1; padding: 2px 6px;
+    border-radius: 10px; background: var(--pill-bg); color: var(--accent);
+    margin-right: 6px; font-weight: 500; vertical-align: 1px;
+  }
   .proj-item .row {
     display: flex; align-items: center; justify-content: space-between; gap: 6px;
   }
@@ -237,6 +244,59 @@
   }
   .proj-item:hover .del { opacity: 1; }
   .proj-item .del:hover { background: rgba(207,34,46,0.12); color: #cf222e; }
+
+  /* Sidebar tools row (top) — Hub Cowork-style "+ New" / nav actions */
+  .proj-tools {
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 6px 6px 4px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .proj-tools .nav-item {
+    display: flex; align-items: center; gap: 8px;
+    background: transparent; border: 0;
+    padding: 7px 10px; border-radius: 6px;
+    color: var(--ink); font-size: 13px; cursor: pointer;
+    text-align: left;
+  }
+  .proj-tools .nav-item:hover { background: rgba(0,0,0,0.04); }
+  .proj-tools .nav-item .icon {
+    width: 16px; height: 16px; display: inline-flex;
+    align-items: center; justify-content: center;
+    color: var(--muted); font-size: 15px; line-height: 1;
+  }
+
+  /* Sidebar footer (bottom) — user identity + session/endpoint meta + actions */
+  .proj-footer {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--line-soft);
+    padding: 10px 12px 12px;
+    display: flex; flex-direction: column; gap: 6px;
+    background: var(--panel);
+  }
+  .proj-footer .user-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .proj-footer .user-avatar {
+    width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+    background: var(--accent); color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600;
+  }
+  .proj-footer .user-avatar.signed-out { background: var(--line); color: var(--muted); }
+  .proj-footer .user-info { flex: 1 1 auto; min-width: 0; }
+  .proj-footer .user-name {
+    font-size: 13px; font-weight: 600; color: var(--ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .proj-footer .user-sub {
+    font-size: 11px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .proj-footer .meta-line {
+    font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .proj-footer .footer-actions { display: flex; gap: 6px; margin-top: 4px; }
+  .proj-footer .footer-actions .btn { padding: 4px 8px; font-size: 11.5px; flex: 1 1 auto; }
 
   /* Content column inside the middle row */
   .content { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
@@ -397,13 +457,9 @@
 <body>
 
 <header class="app">
-  <div style="display:flex; align-items:flex-start; gap:4px;">
+  <div style="display:flex; align-items:center; gap:8px;">
     <button class="hamburger" id="toggleSidebarBtn" title="Show/hide projects list" aria-label="Toggle projects list">☰</button>
-    <div>
-      <h1>Project Charter Desktop Agent</h1>
-      <div class="meta" id="sessionMeta">session: (none — platform will assign)</div>
-      <div class="meta" id="endpointMeta" style="margin-top:2px;">endpoint: —</div>
-    </div>
+    <h1>Project Charter</h1>
   </div>
   <div class="controls">
     <div class="svc-pills" id="svcPills">
@@ -415,21 +471,36 @@
       <option value="hosted">Hosted (Foundry)</option>
       <option value="local">Local agent</option>
     </select>
-    <span class="auth-pill" id="userPill" style="display:none;"></span>
-    <span class="auth-pill" id="authPill">signed out</span>
-    <button class="btn secondary" id="loginBtn">Sign in</button>
-    <button class="btn secondary" id="resetBtn" title="Forget the current Foundry sandbox; next message will create a new one.">Reset session</button>
   </div>
 </header>
 
 <div class="middle">
   <aside class="projects">
+    <div class="proj-tools">
+      <button class="nav-item" id="newProjectBtn" title="Start a new project — keeps existing ones intact.">
+        <span class="icon">+</span><span>New project</span>
+      </button>
+    </div>
     <div class="proj-head">
       <span class="title">Projects</span>
-      <button class="btn secondary" id="newProjectBtn" title="Start a new project — keeps existing ones intact.">+ New</button>
     </div>
     <div class="proj-list" id="projList">
       <div class="activity-empty" style="padding: 8px 12px;">No projects yet.</div>
+    </div>
+    <div class="proj-footer" id="projFooter">
+      <div class="user-row">
+        <div class="user-avatar signed-out" id="userAvatar">?</div>
+        <div class="user-info">
+          <div class="user-name" id="userPill">Not signed in</div>
+          <div class="user-sub" id="authPill">signed out</div>
+        </div>
+      </div>
+      <div class="meta-line" id="sessionMeta" title="Foundry session id">session: (none)</div>
+      <div class="meta-line" id="endpointMeta" title="Agent endpoint">endpoint: —</div>
+      <div class="footer-actions">
+        <button class="btn secondary" id="loginBtn">Sign in</button>
+        <button class="btn secondary" id="resetBtn" title="Forget the current Foundry sandbox; next message will create a new one.">Reset session</button>
+      </div>
     </div>
   </aside>
 
@@ -516,19 +587,31 @@ function addMsg(kind, who, text) {
 }
 
 function setAuth(state, label) {
-  authPill.className = `auth-pill ${state}`;
+  // state: 'ok' | 'bad' | '' (transient) — drives the small sub-line
+  // under the user name in the sidebar footer.
   authPill.textContent = label;
+  authPill.style.color = state === "ok" ? "#1a7f37"
+                       : state === "bad" ? "#cf222e"
+                       : "";
   signedIn = (state === "ok");
   const loginBtn = document.getElementById("loginBtn");
   if (loginBtn) loginBtn.style.display = signedIn ? "none" : "";
 }
 
 function setUser(name) {
+  const avatar = document.getElementById("userAvatar");
   if (name) {
     userPill.textContent = name;
-    userPill.style.display = "inline-block";
+    if (avatar) {
+      avatar.textContent = initials(name);
+      avatar.classList.remove("signed-out");
+    }
   } else {
-    userPill.style.display = "none";
+    userPill.textContent = "Not signed in";
+    if (avatar) {
+      avatar.textContent = "?";
+      avatar.classList.add("signed-out");
+    }
   }
 }
 
@@ -602,6 +685,21 @@ function escapeHtml(s) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+// Short relative-ish date for sidebar rows, à la Hub Cowork: "today" /
+// "yesterday" / "Mon" within the last week / "May 24" / "May 24, 2025".
+function formatProjectDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const now = new Date();
+  const startOfDay = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.floor((startOfDay(now) - startOfDay(d)) / 86400000);
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days > 1 && days < 7) return d.toLocaleDateString(undefined, { weekday: "short" });
+  if (d.getFullYear() === now.getFullYear()) return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 function mdToHtml(src) {
   if (!src) return "";
@@ -1202,13 +1300,19 @@ function renderProjects(payload) {
     const lbl = document.createElement("div");
     lbl.className = "label";
     lbl.textContent = p.label || "New project";
+    const date = document.createElement("span");
+    date.className = "date";
+    date.textContent = formatProjectDate(p.created_at || p.last_used_at || "");
     const del = document.createElement("button");
     del.className = "del";
     del.textContent = "✕";
     del.title = "Delete this project";
     del.addEventListener("click", async (e) => {
       e.stopPropagation();
-      if (!confirm(`Delete project "${p.label}"? This only removes it from the sidebar — agent-side state stays on disk.`)) return;
+      const warning = modeSelect.value === "local"
+        ? `Delete project "${p.label}"?\n\nThis permanently removes the project folder and all its files from disk. This cannot be undone.`
+        : `Delete project "${p.label}"?\n\nThis attempts to delete the Foundry session microVM and removes the project from your sidebar. This cannot be undone.`;
+      if (!confirm(warning)) return;
       const r = await window.pywebview.api.delete_project(p.id);
       if (r && r.ok) {
         renderProjects(r);
@@ -1219,10 +1323,14 @@ function renderProjects(payload) {
       }
     });
     top.appendChild(lbl);
+    top.appendChild(date);
     top.appendChild(del);
     const sub = document.createElement("div");
     sub.className = "sub";
-    sub.textContent = p.customer_name && p.customer_name !== p.label ? p.customer_name : (p.is_new ? "not started" : p.id);
+    const skill = (p.skill || "").trim();
+    const detail = p.customer_name && p.customer_name !== p.label ? p.customer_name : (p.is_new ? "not started" : p.id);
+    const skillHtml = skill ? `<span class="skill-tag">${escapeHtml(skill)}</span>` : "";
+    sub.innerHTML = `${skillHtml}${escapeHtml(detail)}`;
     row.appendChild(top);
     row.appendChild(sub);
     row.addEventListener("click", async () => {
