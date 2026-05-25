@@ -4,25 +4,52 @@ A sibling of `calendar_today.py` whose only difference is that the prompt is a
 CLI argument instead of a hardcoded calendar question. Use it to drive any
 workflow the agent supports — SOW kickoff, resume / status, ad-hoc M365 query.
 
-Same machinery as `calendar_today.py`:
-  - Acquires a user bearer via `az login` (AzureCliCredential) so the Foundry
-    platform's OAuth Identity Passthrough propagates your identity into every
-    WorkIQ MCP call (you see your own M365 data, not the agent MI's).
-  - Streams the SSE event sequence, prints tool calls + text deltas.
-  - Captures `agent_session_id` from the response.created / response.completed
-    payload and prints it so you can re-bind on a follow-up turn.
-  - Handles the `oauth_consent_request` event by opening the consent URL in a
-    browser, waiting for you to consent, and resuming with `previous_response_id`.
+## Session model (two-key, per AGENTS.md §9.1)
 
-Example — kick off the SOW response for the Northwind RFP:
+Two orthogonal IDs travel on every /responses call:
+
+  agent_session_id   — bound to the Foundry microVM and its $HOME (persists
+                       across container restarts, up to 30 days). Identifies
+                       the project sandbox. Pass it on every turn to land in
+                       the same project.
+
+  previous_response_id — bound to the in-memory transcript store (lost on
+                         container restart). Gives the model multi-turn history.
+                         Can be omitted or cleared without losing project state.
+
+Silent empty-completion failure: if previous_response_id references a transcript
+that has rolled (container restarted), the endpoint returns HTTP 200 with zero
+output events. Recovery: retry the same prompt with previous_response_id=None
+and the SAME agent_session_id. Never clear the session_id — that orphans the
+project sandbox.
+
+## Project preamble
+
+Every message is prefixed with a context line the host runtime parses to
+set the active project sandbox before the model runs:
+
+    [charter-agent-context: project_id=<id> is_new=<true|false> skill=<name>]
+
+The host strips this line before the skill sees the message. Including
+`skill=<name>` on every turn lets the host dispatch to the correct warm Agent
+without reading the project log — this matters on the first turn of a new
+project before any log exists.
+
+## Usage
 
     $env:AGENT_RESPONSES_URL = "https://<your-deployed-agent>/responses"
     az login
-    python spike/desktop_to_foundry/chat.py "I just had a Teams meeting about the Northwind RFP. Pull the meeting notes and the RFP email, then kick off the SOW response."
 
-Then on a follow-up turn (resume mode, same sandbox), pass the captured id:
+    # First turn — new project (omit --session-id; platform creates one)
+    python spike/desktop_to_foundry/chat.py \\
+        --project-id p-northwind-01 --skill sow-response \\
+        "I just had a Teams meeting about the Northwind RFP. Pull the notes and kick off the SOW."
 
-    python spike/desktop_to_foundry/chat.py --session-id <captured-id> "what's the status of the Northwind SOW?"
+    # Subsequent turns — same project (reuse session-id + project-id)
+    python spike/desktop_to_foundry/chat.py \\
+        --session-id <captured-id> --project-id p-northwind-01 --skill sow-response \\
+        --previous-response-id <captured-response-id> \\
+        "What's the status of the Northwind SOW?"
 """
 
 from __future__ import annotations
@@ -61,6 +88,16 @@ def acquire_user_token() -> str:
     return token.token  # type: ignore[possibly-unbound]
 
 
+def build_preamble(project_id: str | None, is_new: bool, skill: str | None) -> str:
+    """Return the context preamble line the host runtime parses for routing."""
+    if not project_id:
+        return ""
+    parts = [f"project_id={project_id}", f"is_new={'true' if is_new else 'false'}"]
+    if skill:
+        parts.append(f"skill={skill}")
+    return f"[charter-agent-context: {' '.join(parts)}]\n"
+
+
 def iter_sse_events(response: httpx.Response):
     event_name: str | None = None
     data_lines: list[str] = []
@@ -89,12 +126,20 @@ def call_agent(
     *,
     previous_response_id: str | None,
     agent_session_id: str | None,
-) -> tuple[str | None, str | None, str | None, dict | None]:
+    project_id: str | None = None,
+    is_new: bool = False,
+    skill: str | None = None,
+) -> tuple[str | None, str | None, str | None, dict | None, int]:
     """POST one /responses turn, stream SSE, print events.
 
-    Returns: (response_id, agent_session_id, completed_text, consent_payload).
+    Returns: (response_id, agent_session_id, completed_text, consent_payload, output_event_count).
+    The output_event_count lets the caller detect the silent empty-completion
+    failure mode (container restarted; previous_response_id no longer valid).
     """
-    body: dict[str, Any] = {"input": prompt, "stream": True, "store": False}
+    preamble = build_preamble(project_id, is_new, skill)
+    full_input = preamble + prompt
+
+    body: dict[str, Any] = {"input": full_input, "stream": True, "store": False}
     if agent_session_id:
         body["agent_session_id"] = agent_session_id
     if previous_response_id:
@@ -113,15 +158,16 @@ def call_agent(
     completed_text: str | None = None
     consent_payload: dict | None = None
     tool_calls: list[dict[str, str]] = []
+    output_event_count = 0
 
-    print(f"\n[call] POST {AGENT_RESPONSES_URL}")
+    print(f"\n[bridge] POST {AGENT_RESPONSES_URL}")
     if agent_session_id:
-        print(f"[call] agent_session_id={agent_session_id!r}  (sent in body + header)")
+        print(f"[bridge] session={agent_session_id!r}  prev_resp={previous_response_id!r}")
     else:
-        print("[call] no agent_session_id sent; platform will create one")
-    if previous_response_id:
-        print(f"[call] resuming previous_response_id={previous_response_id}")
-    print(f"[call] prompt: {prompt!r}\n")
+        print("[bridge] no agent_session_id sent; platform will create one")
+    if project_id:
+        print(f"[bridge] project={project_id!r}  skill={skill!r}  is_new={is_new}")
+    print(f"[bridge] prompt: {prompt!r}\n")
 
     with httpx.Client(timeout=HTTP_TIMEOUT) as client:
         with client.stream("POST", AGENT_RESPONSES_URL, json=body, headers=headers) as resp:
@@ -144,14 +190,16 @@ def call_agent(
                         or data.get("agent_session_id")
                         or returned_session_id
                     )
-                    print(f"  \u2190 response.created (response_id={response_id})")
+                    print(f"[bridge] evt#1 type=response.created response_id={response_id}")
+                    output_event_count += 1
                     continue
 
                 if tag == "response.output_item.added":
                     item = data.get("item") or {}
                     if item.get("type") in ("function_call", "tool_call"):
                         tool_calls.append({"name": str(item.get("name") or "?"), "args": ""})
-                        print(f"  \u2192 tool call: {item.get('name')}")
+                        print(f"  → tool call: {item.get('name')}")
+                    output_event_count += 1
                     continue
 
                 if tag == "response.function_call_arguments.delta":
@@ -162,19 +210,20 @@ def call_agent(
                 if tag == "response.function_call_arguments.done":
                     if tool_calls:
                         tool_calls[-1]["args_final"] = str(data.get("arguments") or "")
-                        # Truncate noisy arg payloads for readability.
                         preview = (tool_calls[-1].get("args_final") or "")[:400]
                         print(f"     args: {preview}")
+                    output_event_count += 1
                     continue
 
                 if tag == "response.output_text.delta":
                     delta = data.get("delta") or ""
                     if delta:
                         print(delta, end="", flush=True)
+                    output_event_count += 1
                     continue
 
                 if tag == "response.completed":
-                    print()  # newline before the terminal payload
+                    print()
                     resp_obj = data.get("response") or {}
                     returned_session_id = (
                         resp_obj.get("agent_session_id")
@@ -189,13 +238,16 @@ def call_agent(
                                 text_parts.append(c["text"])
                     if text_parts:
                         completed_text = "\n".join(text_parts)
-                    print(f"  \u2190 response.completed (status={resp_obj.get('status')})")
+                    print(f"[bridge] stream done: events={output_event_count} response_id={response_id} text_parts={len(text_parts)} consent={'yes' if consent_payload else 'no'}")
+                    print(f"  ← response.completed (status={resp_obj.get('status')})")
+                    output_event_count += 1
                     continue
 
                 if tag in ("response.failed", "error", "response.error") or (
                     isinstance(etype, str) and (etype.endswith(".failed") or etype.endswith(".error"))
                 ):
-                    print(f"  \u2190 {tag}\n     payload: {json.dumps(data, indent=2)[:3000]}")
+                    print(f"  ← {tag}\n     payload: {json.dumps(data, indent=2)[:3000]}")
+                    output_event_count += 1
                     continue
 
                 if (
@@ -204,13 +256,14 @@ def call_agent(
                     or "consent_url" in json.dumps(data).lower()
                 ):
                     consent_payload = data
-                    print(f"  \u2190 {tag}\n     consent payload: {json.dumps(data, indent=2)[:1500]}")
+                    print(f"  ← {tag}\n     consent payload: {json.dumps(data, indent=2)[:1500]}")
+                    output_event_count += 1
                     continue
 
     print()
     if returned_session_id:
-        print(f"[call] server reports agent_session_id={returned_session_id!r}")
-    return response_id, returned_session_id, completed_text, consent_payload
+        print(f"[bridge] <- agent_session_id={returned_session_id!r}")
+    return response_id, returned_session_id, completed_text, consent_payload, output_event_count
 
 
 def extract_consent_url(payload: dict) -> str | None:
@@ -244,18 +297,37 @@ def main() -> int:
     p.add_argument("prompt", help="natural-language message to send to the agent")
     p.add_argument(
         "--session-id",
-        default=os.environ.get("AGENT_PROJECT_ID") or None,
+        default=os.environ.get("AGENT_SESSION_ID") or None,
         help=(
             "Bind this turn to an existing Foundry sandbox (agent_session_id). "
-            "Falls back to AGENT_PROJECT_ID env var. If unset, the platform "
-            "creates a fresh sandbox and prints the id back; reuse it on the "
-            "next call to land in the same per-session $HOME."
+            "Falls back to AGENT_SESSION_ID env var. If unset, the platform "
+            "creates a fresh sandbox and prints the id back."
         ),
+    )
+    p.add_argument(
+        "--project-id",
+        default=os.environ.get("AGENT_PROJECT_ID") or None,
+        help=(
+            "Project id sent in the [charter-agent-context] preamble so the "
+            "host sets the right per-project $HOME sandbox before the model "
+            "runs. Falls back to AGENT_PROJECT_ID env var."
+        ),
+    )
+    p.add_argument(
+        "--skill",
+        default=os.environ.get("AGENT_SKILL") or "sow-response",
+        help="Skill name to include in the preamble (default: sow-response).",
+    )
+    p.add_argument(
+        "--is-new",
+        action="store_true",
+        default=False,
+        help="Mark the project as new in the preamble (first turn of a brand-new project).",
     )
     p.add_argument(
         "--previous-response-id",
         default=None,
-        help="Thread this call into an existing response chain (rarely needed for one-shot kickoff).",
+        help="Thread this call into an existing response chain for multi-turn continuity.",
     )
     args = p.parse_args()
 
@@ -264,13 +336,19 @@ def main() -> int:
 
     token = acquire_user_token()
 
-    response_id, session_id, completed, consent = call_agent(
-        token,
-        args.prompt,
+    call_kwargs: dict[str, Any] = dict(
         previous_response_id=args.previous_response_id,
         agent_session_id=args.session_id,
+        project_id=args.project_id,
+        is_new=args.is_new,
+        skill=args.skill,
     )
 
+    response_id, session_id, completed, consent, event_count = call_agent(
+        token, args.prompt, **call_kwargs
+    )
+
+    # ── Consent flow ────────────────────────────────────────────────────────
     if consent:
         url = extract_consent_url(consent)
         if url:
@@ -283,11 +361,38 @@ def main() -> int:
             print(f"\n[consent] consent payload received but no URL extracted:\n{json.dumps(consent, indent=2)}")
         input("\n[consent] press Enter once you have consented... ")
         time.sleep(1)
-        response_id, session_id, completed, consent = call_agent(
-            token,
-            args.prompt,
+        response_id, session_id, completed, consent, event_count = call_agent(
+            token, args.prompt,
             previous_response_id=response_id,
             agent_session_id=session_id,
+            project_id=args.project_id,
+            is_new=args.is_new,
+            skill=args.skill,
+        )
+
+    # ── Silent empty-completion recovery (AGENTS.md §9.1) ───────────────────
+    # If previous_response_id was sent but the transcript has rolled (container
+    # restarted), the endpoint returns HTTP 200 with zero meaningful output.
+    # Retry with previous_response_id=None and the SAME agent_session_id —
+    # never clear session_id or we orphan the project sandbox.
+    if (
+        args.previous_response_id
+        and not consent
+        and not completed
+        and event_count <= 4
+    ):
+        print(
+            "\n[bridge] WARNING: previous_response_id sent but no output received — "
+            "transcript may have rolled (container restart). Retrying with "
+            "previous_response_id=None and same session_id..."
+        )
+        response_id, session_id, completed, consent, event_count = call_agent(
+            token, args.prompt,
+            previous_response_id=None,  # cleared — transcript is gone
+            agent_session_id=session_id or args.session_id,  # microVM still intact
+            project_id=args.project_id,
+            is_new=args.is_new,
+            skill=args.skill,
         )
 
     print("\n" + "=" * 60)
@@ -297,10 +402,21 @@ def main() -> int:
     else:
         print("No response.completed text captured. Inspect the event log above.")
     print("=" * 60)
+
     if session_id:
         print(f"\nAGENT_SESSION_ID: {session_id}")
         print("Reuse it on the next turn with:")
-        print(f"  python spike/desktop_to_foundry/chat.py --session-id {session_id} \"<your next prompt>\"")
+        pid_flag = f" --project-id {args.project_id}" if args.project_id else ""
+        skill_flag = f" --skill {args.skill}" if args.skill else ""
+        print(
+            f"  python spike/desktop_to_foundry/chat.py"
+            f" --session-id {session_id}"
+            f"{pid_flag}"
+            f"{skill_flag}"
+            f" --previous-response-id {response_id}"
+            f' "<your next prompt>"'
+        )
+
     return 0
 
 

@@ -1,12 +1,14 @@
-"""Boot entrypoint: assert env policy, warm runtimes, load skills, start the
-Responses-protocol server.
+"""Boot entrypoint: assert env policy, warm runtimes, start the Responses server.
 
-This agent serves the OpenAI-compatible Responses protocol only — `/responses`
-+ SSE streaming, multi-turn via `previous_response_id`. The hosting framework
-(`agent-framework-foundry-hosting.ResponsesHostServer`) owns conversation
-history; we hand it one warm MAF `Agent` whose instructions are the
-`sow-response` skill body and whose tools are the WorkIQ Toolbox plus the
-agent-side `$HOME` state tools.
+Boot sequence (per AGENTS.md §11.5):
+  1. Assert required env vars — fail fast if any are missing.
+  2. Enable tracing — register ProcessAttributesSpanProcessor before any spans.
+  3. bootstrap() — wires FoundryChatClient, Toolbox MCP tool, registers shared
+     in-process tools, loads skill manifests + bundles, builds one warm MAF
+     Agent per skill. All skill loading happens inside bootstrap so the bundle
+     cache is never cleared by a redundant load_all() call afterwards.
+  4. Start ResponsesHostServer — hands the map of warm per-skill Agents to the
+     resilient host wrapper, which does per-request skill dispatch.
 """
 
 from __future__ import annotations
@@ -66,15 +68,18 @@ def _boot() -> None:
 
     _assert_env()
     _enable_tracing()
+
+    # bootstrap() registers STATE_TOOLS, loads all skill manifests + bundles,
+    # and builds one warm Agent per skill. Do not call skill_loader.load_all()
+    # afterwards — it clears the bundle cache that bootstrap just built.
     foundry_host.bootstrap()
-    skills = skill_loader.load_all()
-    log.info("loaded %d skill(s): %s", len(skills), [s.name for s in skills])
+    log.info("loaded skill(s): %s", skill_loader.loaded_names())
 
 
 def main() -> None:
     _boot()
     log.info("starting Responses protocol server")
-    responses_host.start()
+    responses_host.start(foundry_host.get_all_agents())
 
 
 if __name__ == "__main__":

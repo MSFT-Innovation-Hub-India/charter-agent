@@ -245,6 +245,13 @@ def get_agent(skill_name: str) -> Any:
         ) from e
 
 
+def get_all_agents() -> dict[str, Any]:
+    """Return all warm per-skill Agents keyed by skill name."""
+    if not _agents:
+        raise RuntimeError("foundry_host.bootstrap() must be called first.")
+    return dict(_agents)
+
+
 def get_session(session_id: str) -> Any:
     """Resume the MAF `AgentSession` for `session_id`, or create one and persist it."""
     if _chat_client is None:

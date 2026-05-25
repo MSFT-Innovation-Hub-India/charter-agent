@@ -239,3 +239,8 @@ def get_bundle(name: str) -> SkillBundle:
         return _bundle_cache[name]
     except KeyError as e:
         raise KeyError(f"skill_loader: no bundle named {name!r} (have {list(_bundle_cache)})") from e
+
+
+def loaded_names() -> list[str]:
+    """Return names of already-loaded skills without triggering a reload."""
+    return list(_skill_cache)

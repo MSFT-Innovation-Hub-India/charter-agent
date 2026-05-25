@@ -151,30 +151,19 @@ def load_project_state() -> dict[str, Any]:
     Call this once at the start of every turn, before anything else. The
     returned `mode` is the only thing you need to branch on:
 
-    - `"first_run"` — no `project_log.json` in $HOME. Ground the project,
-      call `start_charter` (project metadata + charter.md), then call
-      `add_charter_task` once per SOW section, then fan out kickoffs.
+    - `"first_run"` — no `project_log.json` exists yet. Call
+      `stamp_project_skill` next (so the sidebar tags the project immediately),
+      then ground the project via WorkIQ, then call `start_charter` and
+      `add_charter_task` to persist the charter, then fan out kickoffs.
     - `"resume"` — a project_log already exists. Use the returned `project_log`
       as the source of truth; do NOT re-ground or re-write the charter.
 
     Returns:
         `{"mode": "first_run"|"resume", "project_log": <log-or-null>,
-          "charter_exists": <bool>}`.
+          "charter_exists": <bool>, "active_project_id": <str>}`.
     """
     log = _read_log()
     if log is None:
-        # First-run: stamp a minimal stub so the desktop client's sidebar can
-        # tag the project with this skill's name immediately, without waiting
-        # for `start_charter` to land much later in the turn. `start_charter`
-        # treats the stub as absent and overwrites it.
-        stub = {
-            "project_id": state.active_project_id(),
-            "skill": SKILL_NAME,
-            "status": "initializing",
-            "tasks": [],
-            "log_entries": [],
-        }
-        _write_log(stub)
         return {
             "mode": "first_run",
             "project_log": None,
@@ -187,6 +176,31 @@ def load_project_state() -> dict[str, Any]:
         "charter_exists": state.exists(_charter_path()),
         "active_project_id": state.active_project_id(),
     }
+
+
+@tool
+def stamp_project_skill() -> dict[str, Any]:
+    """Write a minimal project stub so the desktop sidebar can tag this project
+    with the skill name immediately — before grounding or charter work begins.
+
+    Call this once at the very start of first-run mode, right after
+    `load_project_state` returns `mode="first_run"`. It is a no-op if a
+    project log already exists (including an earlier stub from this same turn).
+    `start_charter` will overwrite the stub when it commits the full charter.
+
+    Returns `{"status": "ok"|"noop"}`.
+    """
+    if state.exists(_log_path()):
+        return {"status": "noop", "reason": "log_already_exists"}
+    stub = {
+        "project_id": state.active_project_id(),
+        "skill": SKILL_NAME,
+        "status": "initializing",
+        "tasks": [],
+        "log_entries": [],
+    }
+    _write_log(stub)
+    return {"status": "ok", "project_id": state.active_project_id(), "skill": SKILL_NAME}
 
 
 @tool
@@ -645,6 +659,7 @@ def publish_view(payload: dict[str, Any]) -> dict[str, Any]:
 
 TOOLS: list[Any] = [
     load_project_state,
+    stamp_project_skill,
     start_charter,
     add_charter_task,
     record_kickoff,
