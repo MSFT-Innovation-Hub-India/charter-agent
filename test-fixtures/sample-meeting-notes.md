@@ -1,7 +1,7 @@
 # Northwind Trading Corp — RFP Response Kick-off (SOW for Custom Logistics Platform)
 
 **Meeting date:** [Today's date]
-**Attendees:** Sansri (sansri@microsoft.com), Srikanta Sankaran (srikantasan@onemtc.net), Kishore P (kishorep@onemtc.net)
+**Attendees:** Sansri (sansri@microsoft.com), Srikanta (srikantasan@onemtc.net), Kishore P (kishorep@onemtc.net)
 
 ---
 
@@ -51,7 +51,7 @@ The team agreed on the review cadence ahead of the customer submission.
 
 **Technical Scope Section:**
 Draft the Technical Scope of the SOW — architecture, tech stack, SAP S/4HANA integration, EDI gateway integration, data migration, test strategy, deployment plan. Raise EDI clarification questions to Eleanor in parallel. Due Day 5 EOD.
-*(Srikanta Sankaran — srikantasan@onemtc.net)*
+*(Srikanta  — srikantasan@onemtc.net)*
 
 **Project Management & Delivery Section:**
 Draft the PM & Delivery section — methodology, team structure, governance, risk/issue management, change control, assumptions, customer dependencies. Due Day 5 EOD.
