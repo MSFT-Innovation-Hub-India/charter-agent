@@ -596,6 +596,7 @@ class Bridge:
         self.endpoints = {"local": local_url, "hosted": hosted_url}
         self.mode: str = initial_mode if initial_mode in self.endpoints else "hosted"
         self._lock = threading.Lock()
+        self._last_response_at: float = 0.0  # epoch time of last completed turn
 
         # Load projects from disk. Projects are scoped per endpoint mode
         # (local sandboxes vs hosted microVMs are different $HOMEs, so a
@@ -992,6 +993,24 @@ class Bridge:
             self._current["is_new"] = False
         self._current["last_used_at"] = _now_iso()
         _save_projects(self._projects_data)
+        # If the session has been idle longer than Foundry's 15-minute compute
+        # deprovisioning window, a stale previous_response_id causes Foundry to
+        # create a NEW session instead of restoring the existing VM — losing all
+        # $HOME state. Clearing it here means Foundry gets only agent_session_id,
+        # which correctly routes back to the saved VM without chaining history.
+        _FOUNDRY_IDLE_SECS = 12 * 60  # 12 min — safely under the 15-min threshold
+        if (
+            self.previous_response_id
+            and self._last_response_at > 0
+            and (time.time() - self._last_response_at) > _FOUNDRY_IDLE_SECS
+        ):
+            print(
+                f"[bridge] clearing stale prev_resp after "
+                f"{int(time.time() - self._last_response_at)}s idle",
+                flush=True,
+            )
+            self.previous_response_id = None
+
         # skill override: caller (e.g. auto-trigger after routing) can supply the
         # target skill directly so the preamble is correct before the project record
         # is updated from disk (which only works in local mode).
@@ -1217,6 +1236,7 @@ class Bridge:
             if mutated:
                 _save_projects(self._projects_data)
                 self._emit("projects.update", self._projects_payload())
+        self._last_response_at = time.time()
         self._emit("turn.complete", {
             "response_id": response_id,
             "session_id": self.session_id,

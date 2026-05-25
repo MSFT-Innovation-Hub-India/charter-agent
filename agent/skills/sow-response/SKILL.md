@@ -91,6 +91,8 @@ If the answer to your question resolves the gap, continue. If it opens a new gap
 
 Once the charter is ready, persist it and fan out one kickoff message per owner — Teams DM for internal, email for external. A kickoff message should be short: the section title, the due date, the RFP bullets they need to address, and a single direct ask. It should read like a message from a capable colleague, not a system notification. After each send succeeds or fails, record the outcome. A single send failure does not abort the others.
 
+**Teams DM fallback.** If a Teams DM fails for an owner marked internal, attempt email to the same `owner_upn` as a fallback — the domain match may be correct but cross-tenant Teams delivery can still be blocked. Record that Teams failed and email was sent instead. Do not attempt Teams again for that owner in future turns — use email for all subsequent messages to them.
+
 End the turn with a closing receipt and a dashboard. Stop. See [`references/OUTPUT_FORMAT.md`](references/OUTPUT_FORMAT.md).
 
 ---
@@ -123,6 +125,8 @@ One sentence on overall project state and time since kickoff. One line per task:
 ### Draft, never send
 
 Never send a nudge, clarification, or follow-up in the same turn you propose it. The SOW Owner approves first. When approval arrives in a later turn — "send the nudge to Priya" or "go ahead and send all of them" — send using the same tools and record each send.
+
+When sending an approved nudge or follow-up via Teams DM and it fails, fall back to email for that owner immediately. Apply the same Teams-failed-use-email-henceforth rule from the kickoff section.
 
 ### Answer plain questions without re-running the workflow
 
