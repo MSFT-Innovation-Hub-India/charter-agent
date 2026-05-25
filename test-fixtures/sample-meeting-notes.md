@@ -63,15 +63,15 @@ Shortlist three relevant case studies from the practice reference library (two l
 
 **Commercial Terms Section:**
 Draft the milestone-based payment schedule, T&M rate card, pricing assumptions, and twelve-month support-and-maintenance pricing. Produce as an Excel pricing model plus a Word narrative. Due Day 6 EOD.
-*(Sansri — sansri@microsoft.com)*
+*(Srikantan.Sankaran@microsoft.com)*
 
 **Assembled SOW Draft for Internal Review:**
 Consolidate all four sections into the working SOW document, run cross-section reconciliation (timeline vs milestones, team mix vs pricing, technical scope vs PM assumptions), share with the regional delivery head and the practice lead. Due Day 7 EOD.
-*(Sansri — sansri@microsoft.com)*
+*(Srikantan.Sankaran@microsoft.com)*
 
 **Final Submission to Northwind:**
 Run final QA pass, generate customer-facing PDF, send to Eleanor Vance (eleanor.vance@northwindtrading.com) with Srikanta and Kishore on copy. Due Day 10 before 5pm IST.
-*(Sansri — sansri@microsoft.com)*
+*(Srikantan.Sankaran@microsoft.com)*
 
 ---
 

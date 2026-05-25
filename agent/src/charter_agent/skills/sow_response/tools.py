@@ -303,6 +303,7 @@ def add_charter_task(
     is_external: bool,
     runbook_requirements: list[str],
     due_at: str = "",
+    owner_oid: str = "",
 ) -> dict[str, Any]:
     """Append one SOW section task to the project. Call once per section.
 
@@ -317,7 +318,7 @@ def add_charter_task(
     Args:
         task_id: kebab-case slug unique within the project (e.g. `"technical-scope"`).
         title: human-readable section title.
-        owner_upn: UPN of the assigned owner.
+        owner_upn: UPN of the assigned owner (verbatim from the meeting notes).
         owner_display_name: friendly display name.
         is_external: True if the owner is outside the SOW Owner's tenant (different
             email domain — customer, partner, vendor). Drives the communication
@@ -325,6 +326,11 @@ def add_charter_task(
         runbook_requirements: bullets derived from the RFP describing what the
             owner must deliver. Plain strings; one per requirement.
         due_at: ISO timestamp. Empty string → defaults to tomorrow 17:00 UTC.
+        owner_oid: Entra ID Object ID (GUID) of the owner. Obtain by calling
+            WorkIQUser___get_user with the owner's UPN before this call. Pass
+            empty string if the lookup fails or the owner is external. Used only
+            for client-side dashboard identity matching; does not affect routing
+            or kickoff channel.
     """
     log = _read_log()
     if log is None:
@@ -342,6 +348,7 @@ def add_charter_task(
         "title": title,
         "owner_upn": owner_upn,
         "owner_display_name": owner_display_name or owner_upn,
+        "owner_oid": owner_oid or None,
         "is_external": bool(is_external),
         "communication_modes": _modes_for(bool(is_external)),
         "due_at": due_at or _default_due_at(),
@@ -581,6 +588,8 @@ def dashboard_payload() -> dict[str, Any]:
                 "task_id": t.get("task_id"),
                 "title": t.get("title"),
                 "owner": t.get("owner_display_name") or t.get("owner_upn"),
+                "owner_upn": t.get("owner_upn"),
+                "owner_oid": t.get("owner_oid"),
                 "status": ui_status,
                 "due_at": t.get("due_at") or "",
                 "last_signal": last_signal,

@@ -53,9 +53,20 @@ Why this rule matters: directory lookups on a partial first name return whoever 
 
 The only legitimate directory lookup here is when the source names a collaborator with **no email address anywhere** — in that case, resolve it, show the resolved address in your closing receipt, and flag that you guessed. Ask the SOW Owner to confirm before sending the kickoff.
 
+
 ### Internal vs external — it changes everything
 
 A collaborator is internal if their email domain matches the SOW Owner's domain. Everyone else — customer contacts, partners, vendors — is external. Internal owners prefer a direct Teams DM. External owners receive email only; there is no cross-tenant Teams sharing. The communication style, tone, and channel for each kickoff message should reflect this distinction. Full rules in [`references/COMMUNICATION_MATRIX.md`](references/COMMUNICATION_MATRIX.md).
+
+### Resolve the Entra Object ID for internal owners
+
+A user can have multiple UPN aliases in the same tenant (e.g. `sansri@microsoft.com` and `Srikantan.Sankaran@microsoft.com` are the same person). The dashboard uses the immutable Entra Object ID (`oid`) to detect when a task is assigned to the signed-in user, so it can display "You" instead of an email address. Without the OID, that detection fails whenever the meeting notes used an alias that differs from the sign-in UPN.
+
+**For each internal task** (where `is_external=False`), immediately after confirming the `owner_upn` from the meeting notes, call a `WorkIQUser___*` tool to look up that UPN in the directory. Extract the `id` field from the returned user profile — this is the immutable Entra Object ID. Pass it as `owner_oid` when calling `add_charter_task`.
+
+- **Do not** perform this lookup for external owners (different tenant domain). Those users are not resolvable via WorkIQ — skip the call and leave `owner_oid` empty.
+- **Do not** use this lookup to change or "correct" the `owner_upn`. The UPN you write into the task stays exactly as it appears in the meeting notes. The OID lookup is additive metadata only.
+- If the lookup fails or returns no result, proceed without an OID — do not block the charter.
 
 ### Write runbook requirements from the RFP, not from memory
 

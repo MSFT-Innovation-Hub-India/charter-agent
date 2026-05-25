@@ -122,6 +122,7 @@
     display: flex; align-items: center; justify-content: center;
     font-size: 11px; font-weight: 600; flex-shrink: 0;
   }
+  .avatar.you { background: var(--accent); color: white; }
   .tile-id { flex: 1; min-width: 0; }
   .tile-id .name { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tile-id .role { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -567,6 +568,8 @@ const svcFoundry = $("svcFoundry");
 const svcWorkIQ = $("svcWorkIQ");
 
 let signedIn = false;
+let currentUserUpn = null;
+let currentUserOid = null;
 let busy = false;
 let currentAgentMsg = null;       // streaming agent bubble DOM node
 let currentAgentBuffer = "";      // accumulated agent text for the in-flight turn
@@ -598,7 +601,9 @@ function setAuth(state, label) {
   if (loginBtn) loginBtn.style.display = signedIn ? "none" : "";
 }
 
-function setUser(name) {
+function setUser(name, upn, oid) {
+  currentUserUpn = (upn && typeof upn === "string") ? upn.toLowerCase() : null;
+  currentUserOid = (oid && typeof oid === "string") ? oid : null;
   const avatar = document.getElementById("userAvatar");
   if (name) {
     userPill.textContent = name;
@@ -606,7 +611,13 @@ function setUser(name) {
       avatar.textContent = initials(name);
       avatar.classList.remove("signed-out");
     }
+    // Re-render the dashboard now that the user identity is known — tiles that
+    // belong to the signed-in user need to show "You", and the first render
+    // (from ready()) fires before signin_silent() has populated currentUserUpn.
+    if (_lastDashboard) renderDashboard(_lastDashboard);
   } else {
+    currentUserUpn = null;
+    currentUserOid = null;
     userPill.textContent = "Not signed in";
     if (avatar) {
       avatar.textContent = "?";
@@ -993,6 +1004,7 @@ function setEndpoint(mode, url) {
 // stream into its right column even when the agent only sends a fresh
 // dashboard payload (e.g. on turn.complete).
 let _lastActivity = [];
+let _lastDashboard = null;
 
 function initials(name) {
   if (!name) return "?";
@@ -1027,6 +1039,7 @@ const STATUS_LABEL = {
 
 function renderDashboard(d) {
   if (!d) { return; }
+  _lastDashboard = d;
   const sections = Array.isArray(d.sections) ? d.sections : [];
   const exceptions = Array.isArray(d.exceptions) ? d.exceptions : [];
   const prog = d.progress || { submitted: 0, total: sections.length || 0 };
@@ -1036,12 +1049,21 @@ function renderDashboard(d) {
   const tiles = sections.map(s => {
     const st = s.status || "assigned";
     const label = STATUS_LABEL[st] || st;
+    // Prefer OID (immutable Entra GUID, alias-proof). Fall back to UPN only
+    // for project logs that predate the owner_oid field.
+    const isYou = !!(
+      (currentUserOid && s.owner_oid && s.owner_oid === currentUserOid) ||
+      (!s.owner_oid && currentUserUpn && s.owner_upn &&
+       s.owner_upn.toLowerCase() === currentUserUpn)
+    );
+    const displayOwner = isYou ? "You" : escapeHtml(s.owner || "—");
+    const avatarClass = isYou ? "avatar you" : "avatar";
     return `
       <div class="tile">
         <div class="tile-head">
-          <div class="avatar">${escapeHtml(initials(s.owner || s.task_id))}</div>
+          <div class="${avatarClass}">${escapeHtml(initials(s.owner || s.task_id))}</div>
           <div class="tile-id">
-            <div class="name">${escapeHtml(s.owner || "—")}</div>
+            <div class="name">${displayOwner}</div>
             <div class="role">${escapeHtml(s.task_id || "")}</div>
           </div>
         </div>
@@ -1262,7 +1284,7 @@ loginBtn.addEventListener("click", async () => {
   const r = await window.pywebview.api.login();
   if (r && r.ok) {
     setAuth("ok", "signed in");
-    setUser(r.user_name);
+    setUser(r.user_name, r.user_upn, r.user_oid);
   } else {
     setAuth("bad", "sign-in failed");
     setUser(null);
@@ -1420,7 +1442,7 @@ document.querySelectorAll(".qa").forEach(el => {
 window.addEventListener("pywebviewready", async () => {
   const ctx = await window.pywebview.api.ready();
   if (ctx && ctx.session_id) setSession(ctx.session_id);
-  if (ctx && ctx.user_name) setUser(ctx.user_name);
+  if (ctx && ctx.user_name) setUser(ctx.user_name, ctx.user_upn, ctx.user_oid);
   if (ctx && ctx.projects) renderProjects(ctx.projects);
   if (ctx && ctx.view) {
     if (ctx.view.activity) renderActivityLog(ctx.view.activity);
@@ -1444,7 +1466,7 @@ window.addEventListener("pywebviewready", async () => {
         const sr = await window.pywebview.api.signin_silent();
         if (sr && sr.ok) {
           setAuth("ok", "signed in");
-          setUser(sr.user_name);
+          setUser(sr.user_name, sr.user_upn, sr.user_oid);
         } else {
           setAuth("", "signed out");
         }

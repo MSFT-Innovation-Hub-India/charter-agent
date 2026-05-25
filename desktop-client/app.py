@@ -207,6 +207,17 @@ def _maybe_extract_dashboard(text: str) -> dict | None:
     return None
 
 
+def _decode_jwt_claims(token: str) -> dict:
+    """Decode the payload of an Azure AD JWT without verifying the signature."""
+    try:
+        import base64
+        payload_b64 = token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload_b64).decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _decode_jwt_name(token: str) -> str | None:
     """Pull a display name out of an Azure AD access token without verifying it.
 
@@ -215,18 +226,34 @@ def _decode_jwt_name(token: str) -> str | None:
     uses it to greet the user. Returns the first of `name`,
     `preferred_username`, `upn`, or `unique_name` that's present.
     """
-    try:
-        import base64
-        payload_b64 = token.split(".")[1]
-        payload_b64 += "=" * (-len(payload_b64) % 4)
-        claims = json.loads(base64.urlsafe_b64decode(payload_b64).decode("utf-8"))
-    except Exception:  # noqa: BLE001
-        return None
+    claims = _decode_jwt_claims(token)
     for key in ("name", "preferred_username", "upn", "unique_name"):
         val = claims.get(key)
         if isinstance(val, str) and val:
             return val
     return None
+
+
+def _decode_jwt_upn(token: str) -> str | None:
+    """Pull the UPN/email out of an Azure AD access token without verifying it."""
+    claims = _decode_jwt_claims(token)
+    for key in ("preferred_username", "upn", "unique_name"):
+        val = claims.get(key)
+        if isinstance(val, str) and val:
+            return val
+    return None
+
+
+def _decode_jwt_oid(token: str) -> str | None:
+    """Pull the Entra ID Object ID out of an Azure AD access token.
+
+    The `oid` claim is an immutable GUID that uniquely identifies the user
+    regardless of UPN aliases or renames. Used for owner identity matching
+    in the dashboard — more reliable than UPN string comparison.
+    """
+    claims = _decode_jwt_claims(token)
+    val = claims.get("oid")
+    return val if isinstance(val, str) and val else None
 
 
 def _load_record() -> AuthenticationRecord | None:
@@ -416,6 +443,8 @@ def _dashboard_from_log(log: dict[str, Any]) -> dict[str, Any]:
             "task_id": t.get("task_id"),
             "title": t.get("title"),
             "owner": t.get("owner_display_name") or t.get("owner_upn"),
+            "owner_upn": t.get("owner_upn"),
+            "owner_oid": t.get("owner_oid"),
             "status": ui_status,
             "due_at": t.get("due_at") or "",
             "last_signal": last_signal,
@@ -521,6 +550,8 @@ class Bridge:
         self.token: str | None = None
         self.token_expires_at: float = 0.0
         self.user_name: str | None = None
+        self.user_upn: str | None = None
+        self.user_oid: str | None = None
         self._credential: Any = None
         self._record_saved: bool = _AUTH_RECORD_PATH.exists()
         self.endpoints = {"local": local_url, "hosted": hosted_url}
@@ -626,6 +657,8 @@ class Bridge:
             "tenant_id": TENANT_ID,
             "scope": SCOPE,
             "user_name": self.user_name,
+            "user_upn": self.user_upn,
+            "user_oid": self.user_oid,
             "has_record": self._record_saved,
             "projects": self._projects_payload(),
             "view": view,
@@ -655,8 +688,10 @@ class Bridge:
         self.token = tok.token
         self.token_expires_at = float(tok.expires_on)
         self.user_name = _decode_jwt_name(tok.token)
-        print(f"[bridge] signin_silent ok user={self.user_name!r}", flush=True)
-        return {"ok": True, "expires_on": int(tok.expires_on), "user_name": self.user_name}
+        self.user_upn = _decode_jwt_upn(tok.token)
+        self.user_oid = _decode_jwt_oid(tok.token)
+        print(f"[bridge] signin_silent ok user={self.user_name!r} upn={self.user_upn!r} oid={self.user_oid!r}", flush=True)
+        return {"ok": True, "expires_on": int(tok.expires_on), "user_name": self.user_name, "user_upn": self.user_upn, "user_oid": self.user_oid}
 
     # ---------- projects API ----------
 
@@ -878,7 +913,9 @@ class Bridge:
         self.token = tok.token
         self.token_expires_at = float(tok.expires_on)
         self.user_name = _decode_jwt_name(tok.token)
-        return {"ok": True, "expires_on": int(tok.expires_on), "user_name": self.user_name}
+        self.user_upn = _decode_jwt_upn(tok.token)
+        self.user_oid = _decode_jwt_oid(tok.token)
+        return {"ok": True, "expires_on": int(tok.expires_on), "user_name": self.user_name, "user_upn": self.user_upn, "user_oid": self.user_oid}
 
     def reset_session(self) -> dict:
         """Forget the current project's server-side session, keep the project itself.
