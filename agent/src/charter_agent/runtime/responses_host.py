@@ -30,7 +30,7 @@ from typing import Any
 from .. import state
 from . import project_router
 
-_DEFAULT_SKILL = "sow-response"
+_DEFAULT_SKILL = "general"
 _log = logging.getLogger(__name__)
 
 

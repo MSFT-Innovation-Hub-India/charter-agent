@@ -589,6 +589,18 @@ function addMsg(kind, who, text) {
   return wrap.querySelector(".bubble");
 }
 
+function renderStoredTranscript(messages) {
+  if (!messages || !messages.length) return;
+  for (const m of messages) {
+    if (m.role === "user") {
+      addMsg("user", "you", m.text || "");
+    } else if (m.role === "agent" && m.text) {
+      const bubble = addMsg("agent", "agent", "");
+      if (bubble) renderAgentText(bubble, m.text);
+    }
+  }
+}
+
 function setAuth(state, label) {
   // state: 'ok' | 'bad' | '' (transient) — drives the small sub-line
   // under the user name in the sidebar footer.
@@ -1174,6 +1186,27 @@ async function sendPrompt(text) {
   }
 }
 
+async function _autoTriggerSkill() {
+  // Called when the skill changed during the last turn (e.g. general → sow-response).
+  // Fires a silent follow-up turn so the new skill picks up immediately without the
+  // user having to type anything. No user bubble is added — only the agent response shows.
+  if (busy) return;
+  if (!await ensureSignedIn()) return;
+  currentAgentBuffer = "";
+  currentAgentMsg = addMsg("agent", "agent", "");
+  currentAgentMsg.classList.add("thinking");
+  currentAgentMsg.setAttribute("data-thinking-label", "Starting up…");
+  setBusy(true);
+  startBusy();
+  const r = await window.pywebview.api.send("proceed");
+  if (!r || !r.ok) {
+    currentAgentMsg.textContent = `error: ${(r && r.error) || "unknown"}`;
+    currentAgentMsg.parentElement.classList.add("error");
+    setBusy(false);
+    stopBusy();
+  }
+}
+
 // ---- agent-event sink (called from Python via evaluate_js) ----
 
 window.onAgentEvent = function (msg) {
@@ -1251,6 +1284,11 @@ window.onAgentEvent = function (msg) {
       // its right-column stream.
       if (p.activity) renderActivityLog(p.activity);
       if (p.dashboard) renderDashboard(p.dashboard);
+      break;
+    case "skill.routed":
+      // Skill changed this turn (e.g. general → sow-response). Auto-trigger the
+      // new skill so it starts immediately without the user needing to re-prompt.
+      setTimeout(_autoTriggerSkill, 400);
       break;
   }
 };
@@ -1382,11 +1420,18 @@ function loadActiveProjectView(payload) {
   clearTranscript();
   clearActivity();
   const view = payload && payload.view;
+  if (view && view.transcript && view.transcript.length) renderStoredTranscript(view.transcript);
   if (view && view.activity) renderActivityLog(view.activity);
   if (view && view.dashboard) {
     renderDashboard(view.dashboard);
   } else {
-    dashboard.innerHTML = `<div class="dash-empty">Switched to <b>${(payload && payload.list && (payload.list.find(p => p.id === payload.active) || {}).label) || "project"}</b>. Ask "show me where we are" to get the latest digest, or use a quick-action.</div>`;
+    const _ap = payload && payload.list && (payload.list.find(p => p.id === payload.active) || {});
+    const _label = (_ap && _ap.label) || "project";
+    const _skill = (_ap && _ap.skill) || "";
+    const _hint = _skill === "sow-response"
+      ? `Ask "show me where we are" to get the latest digest, or use a quick-action.`
+      : `Ask me anything, or say "I have an RFP" to start an SOW response.`;
+    dashboard.innerHTML = `<div class="dash-empty">Switched to <b>${escapeHtml(_label)}</b>. ${_hint}</div>`;
   }
   setSession((payload && payload.session_id) || null);
 }
@@ -1404,7 +1449,7 @@ newProjectBtn.addEventListener("click", async () => {
   if (r && r.ok) {
     renderProjects(r);
     loadActiveProjectView(r);
-    addMsg("system", "system", "New project ready. Describe the RFP or paste the kickoff context to begin.");
+    addMsg("system", "system", "New project ready. Ask me anything, or say \"I have an RFP\" to kick off an SOW response.");
   }
 });
 modeSelect.addEventListener("change", async () => {

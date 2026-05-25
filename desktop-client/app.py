@@ -327,6 +327,43 @@ _PROJECTS_PATH = _APP_HOME / "projects.json"
 # Used to restore the dashboard on app restart for hosted mode, where the
 # agent's $HOME lives in a Foundry microVM the client can't read directly.
 _VIEW_CACHE_PATH = _APP_HOME / "view_cache.json"
+# Per-project conversation transcript stored client-side so it survives
+# project switches. Scoped by mode so local and hosted histories are separate.
+_TRANSCRIPT_DIR = _APP_HOME / "transcripts"
+_TRANSCRIPT_MAX_TURNS = 200  # cap at N user/agent turn pairs
+
+
+def _transcript_path(mode: str, pid: str) -> pathlib.Path:
+    return _TRANSCRIPT_DIR / f"{mode}-{pid}.json"
+
+
+def _load_transcript(mode: str, pid: str) -> list[dict[str, Any]]:
+    p = _transcript_path(mode, pid)
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _save_transcript_turn(mode: str, pid: str, user_text: str, agent_text: str) -> None:
+    _TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+    p = _transcript_path(mode, pid)
+    try:
+        existing: list[dict[str, Any]] = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+    except Exception:  # noqa: BLE001
+        existing = []
+    existing.append({"role": "user", "text": user_text})
+    if agent_text:
+        existing.append({"role": "agent", "text": agent_text})
+    # Trim to cap: keep the most recent N turn-pairs (2 messages each).
+    max_msgs = _TRANSCRIPT_MAX_TURNS * 2
+    if len(existing) > max_msgs:
+        existing = existing[-max_msgs:]
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(p)
 
 
 def _load_view_cache() -> dict[str, Any]:
@@ -521,6 +558,7 @@ def _project_view(pid: str, *, mode: str | None = None) -> dict[str, Any]:
     log = _read_project_log(pid)
     dashboard = _dashboard_from_log(log) if log else None
     activity = _read_activity_tail(pid) if mode == "local" else []
+    transcript = _load_transcript(mode, pid) if mode else []
     if dashboard is None and mode:
         cache = _load_view_cache().get(f"{mode}/{pid}") or {}
         cached_dash = cache.get("dashboard")
@@ -535,6 +573,7 @@ def _project_view(pid: str, *, mode: str | None = None) -> dict[str, Any]:
         "project_id": pid,
         "dashboard": dashboard,
         "activity": activity,
+        "transcript": transcript,
     }
 
 
@@ -603,6 +642,7 @@ class Bridge:
             projects[pid] = {
                 "label": "New project",
                 "customer_name": "",
+                "skill": "general",
                 "session_id": None,
                 "previous_response_id": None,
                 "is_new": True,
@@ -737,6 +777,7 @@ class Bridge:
         self._mode_projects()[pid] = {
             "label": label.strip() or "New project",
             "customer_name": "",
+            "skill": "general",
             "session_id": None,
             "previous_response_id": None,
             "is_new": True,
@@ -848,12 +889,19 @@ class Bridge:
                 _save_view_cache(cache)
         except Exception as ex:  # noqa: BLE001
             logger.debug("view_cache purge failed for %s: %s", project_id, ex)
+        try:
+            tp = _transcript_path(self.mode, project_id)
+            if tp.exists():
+                tp.unlink()
+        except Exception as ex:  # noqa: BLE001
+            logger.debug("transcript purge failed for %s: %s", project_id, ex)
         del projects[project_id]
         if not projects:
             pid = _gen_project_id()
             projects[pid] = {
                 "label": "New project",
                 "customer_name": "",
+                "skill": "general",
                 "session_id": None,
                 "previous_response_id": None,
                 "is_new": True,
@@ -983,16 +1031,17 @@ class Bridge:
         with self._lock:
             self._emit("turn.start", {"prompt": display_prompt, "session_id": self.session_id, "mode": self.mode, "project_id": self.project_id})
             try:
-                self._post_one(wire_prompt, url=url, previous_response_id=self.previous_response_id)
+                self._post_one(wire_prompt, url=url, previous_response_id=self.previous_response_id, display_prompt=display_prompt)
             except Exception as e:  # noqa: BLE001
                 self._emit("turn.error", {"error": str(e)})
 
-    def _post_one(self, prompt: str, *, url: str, previous_response_id: str | None) -> None:
+    def _post_one(self, prompt: str, *, url: str, previous_response_id: str | None, display_prompt: str = "") -> None:
         # NB: do NOT set store=False on the host call — the Responses host server
         # uses its own transcript store to resolve previous_response_id, and
         # opting out wipes the model's memory of prior turns (RFP grounding,
         # tool outputs, etc.). The upstream-model `store` flag is pinned in
         # runtime/foundry_host.py, which is the right place for it.
+        _skill_at_start = self._current.get("skill") or "general"
         body: dict[str, Any] = {"input": prompt, "stream": True}
         if self.session_id:
             body["agent_session_id"] = self.session_id
@@ -1122,7 +1171,7 @@ class Bridge:
         ):
             print("[bridge] empty completion w/ stale prev_resp; retrying without it (keeping session)", flush=True)
             self.previous_response_id = None
-            self._post_one(prompt, url=url, previous_response_id=None)
+            self._post_one(prompt, url=url, previous_response_id=None, display_prompt=display_prompt)
             return
 
         if consent_payload:
@@ -1134,7 +1183,7 @@ class Bridge:
                 except Exception:  # noqa: BLE001
                     pass
                 time.sleep(8)
-                self._post_one(prompt, url=url, previous_response_id=response_id)
+                self._post_one(prompt, url=url, previous_response_id=response_id, display_prompt=display_prompt)
                 return
 
         dashboard = published_dashboard or _maybe_extract_dashboard(final_text)
@@ -1173,6 +1222,9 @@ class Bridge:
         view = _project_view(self.project_id, mode=self.mode)
         if self._sync_skill_from_view(view):
             self._emit("projects.update", self._projects_payload())
+            _skill_now = self._current.get("skill") or "general"
+            if _skill_now != _skill_at_start and _skill_now != "general":
+                self._emit("skill.routed", {"skill": _skill_now})
         # If this turn produced a fresh dashboard, treat it as live state —
         # overrides whatever stale cache `_project_view` may have returned for
         # hosted mode, and strips any from_cache/saved_at markers.
@@ -1204,6 +1256,13 @@ class Bridge:
                 _save_view_cache(cache)
             except Exception as ex:  # noqa: BLE001
                 logger.debug("view cache write failed: %s", ex)
+        # Persist the conversation turn so it can be re-rendered when the user
+        # switches away and returns to this project.
+        if final_text and display_prompt:
+            try:
+                _save_transcript_turn(self.mode, self.project_id, display_prompt, final_text)
+            except Exception as ex:  # noqa: BLE001
+                logger.debug("transcript save failed: %s", ex)
         self._emit("view.update", view)
 
 

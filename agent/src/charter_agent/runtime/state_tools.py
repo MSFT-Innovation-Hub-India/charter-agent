@@ -25,6 +25,45 @@ from ..observability import log_activity
 
 
 @tool
+def route_to_skill(skill_name: str) -> dict[str, Any]:
+    """Mark this project to use the named skill from the next turn onwards.
+
+    Writes a minimal project stub so the host routes subsequent turns to
+    `skill_name` instead of the default general skill. Call this once when
+    you have determined the user wants to start a specialised workflow.
+    Does nothing if the project already has that skill set.
+
+    Args:
+        skill_name: The skill identifier, e.g. "sow-response".
+    """
+    if not skill_name or not all(c.isalnum() or c == "-" for c in skill_name):
+        return {"status": "error", "reason": "invalid skill_name — must be alphanumeric with hyphens"}
+    # "general" is the default — the client-side project store already seeds
+    # skill="general" for new projects, so no project_log stub is needed.
+    # Writing one would trigger the SOW dashboard template unnecessarily.
+    if skill_name == "general":
+        return {"status": "noop", "reason": "general is the default; no stub needed"}
+    log_path = state.project_path("project_log.json")
+    if state.exists(log_path):
+        try:
+            existing = state.read_json(log_path)
+            if existing.get("skill") == skill_name:
+                return {"status": "noop", "reason": "skill already set"}
+        except Exception:  # noqa: BLE001
+            pass
+    pid = state.active_project_id()
+    stub: dict[str, Any] = {
+        "project_id": pid,
+        "skill": skill_name,
+        "status": "initializing",
+        "tasks": [],
+        "log_entries": [],
+    }
+    state.write_json(log_path, stub)
+    return {"status": "ok", "project_id": pid, "skill": skill_name}
+
+
+@tool
 def state_write_text(path: str, content: str) -> str:
     """Atomically write a text file under the session's `$HOME` directory.
 
@@ -127,6 +166,7 @@ def log_workflow_step(kind: str, summary: str, ref: str = "") -> str:
 
 
 STATE_TOOLS: list[Any] = [
+    route_to_skill,
     state_write_text,
     state_read_text,
     state_write_json,

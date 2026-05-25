@@ -163,10 +163,13 @@ def load_project_state() -> dict[str, Any]:
           "charter_exists": <bool>, "active_project_id": <str>}`.
     """
     log = _read_log()
-    if log is None:
+    # Treat a routing stub (status="initializing") the same as no log — the
+    # general skill writes this stub when it hands off to sow-response before
+    # any charter work has begun.
+    if log is None or log.get("status") == "initializing":
         return {
             "mode": "first_run",
-            "project_log": None,
+            "project_log": log,
             "charter_exists": state.exists(_charter_path()),
             "active_project_id": state.active_project_id(),
         }
