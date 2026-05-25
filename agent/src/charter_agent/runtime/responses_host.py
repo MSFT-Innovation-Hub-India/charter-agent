@@ -47,6 +47,11 @@ def _resolve_project_skill(default: str) -> str:
             skill = log.get("skill")
             if skill and isinstance(skill, str):
                 return skill
+            # Backward compat: logs written before the skill field was added
+            # carry project_kind instead. Map known kinds to their skill name.
+            kind = log.get("project_kind") or ""
+            if kind == "sow_response":
+                return "sow-response"
     except Exception as exc:  # noqa: BLE001
         _log.debug("_resolve_project_skill: could not read project log (%s)", exc)
     return default

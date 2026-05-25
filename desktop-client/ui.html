@@ -1192,13 +1192,15 @@ async function _autoTriggerSkill() {
   // user having to type anything. No user bubble is added — only the agent response shows.
   if (busy) return;
   if (!await ensureSignedIn()) return;
+  const targetSkill = _pendingRouteTarget || "";
+  _pendingRouteTarget = null;
   currentAgentBuffer = "";
   currentAgentMsg = addMsg("agent", "agent", "");
   currentAgentMsg.classList.add("thinking");
   currentAgentMsg.setAttribute("data-thinking-label", "Starting up…");
   setBusy(true);
   startBusy();
-  const r = await window.pywebview.api.send("proceed");
+  const r = await window.pywebview.api.send("proceed", targetSkill);
   if (!r || !r.ok) {
     currentAgentMsg.textContent = `error: ${(r && r.error) || "unknown"}`;
     currentAgentMsg.parentElement.classList.add("error");
@@ -1209,12 +1211,18 @@ async function _autoTriggerSkill() {
 
 // ---- agent-event sink (called from Python via evaluate_js) ----
 
+// Skill routed this turn via route_to_skill — set when tool.call fires, populated
+// with the skill name when tool.args arrives. Cleared on turn.complete.
+let _pendingSkillRoute = null;
+// Target skill passed to send() when the auto-trigger fires.
+let _pendingRouteTarget = null;
+
 window.onAgentEvent = function (msg) {
   if (!msg || !msg.event) return;
   const p = msg.payload || {};
   switch (msg.event) {
     case "turn.start":
-      // Already handled in sendPrompt; nothing to do here.
+      _pendingSkillRoute = null;
       break;
     case "session.update":
       setSession(p.session_id);
@@ -1228,9 +1236,16 @@ window.onAgentEvent = function (msg) {
       if (currentAgentMsg && currentAgentMsg.classList.contains("thinking")) {
         currentAgentMsg.setAttribute("data-thinking-label", humanizeTool(p.name) + "…");
       }
+      if (p.name === "route_to_skill") _pendingSkillRoute = "";
       break;
     case "tool.args":
       decorateActiveTool(p.args);
+      if (_pendingSkillRoute !== null && p.args) {
+        try {
+          const parsed = typeof p.args === "string" ? JSON.parse(p.args) : p.args;
+          if (parsed && parsed.skill_name) _pendingSkillRoute = parsed.skill_name;
+        } catch (_) {}
+      }
       break;
     case "text.delta":
       finishActiveTool("done");
@@ -1258,6 +1273,14 @@ window.onAgentEvent = function (msg) {
       setBusy(false);
       stopBusy();
       currentAgentMsg = null;
+      {
+        const routed = _pendingSkillRoute;
+        _pendingSkillRoute = null;
+        if (routed && routed !== "general") {
+          _pendingRouteTarget = routed;
+          setTimeout(_autoTriggerSkill, 400);
+        }
+      }
       break;
     case "turn.error":
       finishActiveTool("error");

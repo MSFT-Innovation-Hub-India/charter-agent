@@ -977,7 +977,7 @@ class Bridge:
 
     # ---------- chat ----------
 
-    def send(self, prompt: str) -> dict:
+    def send(self, prompt: str, skill: str = "") -> dict:
         url = self.endpoints.get(self.mode)
         if not url:
             return {"ok": False, "error": f"endpoint for mode={self.mode!r} is not configured."}
@@ -992,7 +992,14 @@ class Bridge:
             self._current["is_new"] = False
         self._current["last_used_at"] = _now_iso()
         _save_projects(self._projects_data)
-        preamble = f"[charter-agent-context: project_id={pid} is_new={'true' if is_new else 'false'}]\n"
+        # skill override: caller (e.g. auto-trigger after routing) can supply the
+        # target skill directly so the preamble is correct before the project record
+        # is updated from disk (which only works in local mode).
+        effective_skill = (skill.strip() if skill else "") or (self._current.get("skill") or "general")
+        if skill.strip() and skill.strip() != self._current.get("skill"):
+            self._current["skill"] = skill.strip()
+            _save_projects(self._projects_data)
+        preamble = f"[charter-agent-context: project_id={pid} is_new={'true' if is_new else 'false'} skill={effective_skill}]\n"
         threading.Thread(target=self._run_turn, args=(prompt, preamble + prompt, url), daemon=True).start()
         return {"ok": True}
 
