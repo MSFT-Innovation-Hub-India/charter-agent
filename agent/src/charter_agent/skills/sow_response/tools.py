@@ -589,20 +589,27 @@ def dashboard_payload() -> dict[str, Any]:
 
     # Include the project's activity tail so the desktop client can render the
     # "ACTIVITY STREAM" panel in hosted mode (where it cannot reach the
-    # microVM's $HOME directly). Last 50 entries, oldest first.
+    # microVM's $HOME directly). Capped small (15 entries, only at/kind/summary)
+    # because the model is asked to echo the dashboard JSON verbatim and large
+    # arrays get silently truncated/dropped.
     activity_tail: list[dict[str, Any]] = []
     try:
         act_path = state.home_dir() / "projects" / state.active_project_id() / "activity.json"
         if act_path.exists():
-            lines = act_path.read_text(encoding="utf-8").splitlines()[-50:]
+            lines = act_path.read_text(encoding="utf-8").splitlines()[-15:]
             for line in lines:
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    activity_tail.append(json.loads(line))
+                    obj = json.loads(line)
                 except Exception:  # noqa: BLE001
                     continue
+                activity_tail.append({
+                    "at": obj.get("at"),
+                    "kind": obj.get("kind"),
+                    "summary": obj.get("summary"),
+                })
     except Exception:  # noqa: BLE001
         activity_tail = []
 
@@ -622,6 +629,20 @@ def dashboard_payload() -> dict[str, Any]:
     }
 
 
+@tool
+def publish_view(payload: dict[str, Any]) -> dict[str, Any]:
+    """Transmit the dashboard payload to the desktop client.
+
+    Call this immediately after `dashboard_payload`, passing its exact return
+    value as `payload`. The client reads the dashboard from this tool call's
+    arguments (which are surfaced on the SSE stream) rather than parsing the
+    JSON fenced in the prose receipt — that keeps every field, including the
+    activity tail, intact regardless of how the model formats its closing
+    prose. Returns `{"ok": True}`; no on-disk side effects.
+    """
+    return {"ok": True}
+
+
 TOOLS: list[Any] = [
     load_project_state,
     start_charter,
@@ -631,6 +652,7 @@ TOOLS: list[Any] = [
     mark_task_polled,
     record_nudge_sent,
     dashboard_payload,
+    publish_view,
 ]
 
 

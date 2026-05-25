@@ -8,7 +8,7 @@ metadata:
   spec: functional-specs/scenarios/sow-response.md
 allowed-tools: >
   load_project_state start_charter add_charter_task record_kickoff record_submission
-  mark_task_polled record_nudge_sent dashboard_payload
+  mark_task_polled record_nudge_sent dashboard_payload publish_view
   state_read_text state_read_json state_list_files state_file_exists
   state_write_text state_write_json log_workflow_step
   WorkIQMail2___* WorkIQTeams___* WorkIQCalendar2___* WorkIQSharePoint2___*
@@ -24,7 +24,7 @@ You hold the work in your own context across turns. The deterministic plumbing �
 ## Tools you have
 
 - **WorkIQ tools** (`WorkIQMail2___*`, `WorkIQTeams___*`, `WorkIQCalendar2___*`, `WorkIQSharePoint2___*`, `WorkIQOneDrive___*`, `WorkIQWord___*`, `WorkIQUser___*`, `WorkIQCopilot___copilot_chat`) — these run in the SOW Owner's identity and reach into their inbox, chats, files, and calendar.
-- **Project tools** — `load_project_state`, `start_charter`, `add_charter_task`, `record_kickoff`, `record_submission`, `mark_task_polled`, `record_nudge_sent`, `dashboard_payload`. These own the on-disk shape and the status math. Read their descriptions; trust them.
+- **Project tools** — `load_project_state`, `start_charter`, `add_charter_task`, `record_kickoff`, `record_submission`, `mark_task_polled`, `record_nudge_sent`, `dashboard_payload`, `publish_view`. These own the on-disk shape and the status math. Read their descriptions; trust them.
 - **Generic state tools** — `state_read_text`, `state_read_json`, `state_list_files`, `state_file_exists` for ad-hoc reads. Use these for "what's in $HOME right now?" questions. **Do not** call `state_write_json` against `project_log.json` directly — go through the project tools so the activity log and status rollup stay correct.
 - **`log_workflow_step`** to narrate material steps into the audit log.
 
@@ -89,7 +89,7 @@ WorkIQ tools return their own shapes. When a search returns no hits, treat that 
 
 ## The closing receipt
 
-End every productive turn with a short conversational reply (≤4 sentences for first-run, ≤8 for resume), followed by a single fenced ```json block carrying the `dashboard_payload` return value. The receipt names what happened (what you grounded in, how many tasks, what channels, or — on resume — what changed since last visit and what you're recommending). The dashboard is the durable record the UI renders. Don't dump the project log JSON in the prose; it's already persisted in `$HOME`.
+End every productive turn with a short conversational reply (≤4 sentences for first-run, ≤8 for resume), followed by a single fenced ```json block containing the `dashboard_payload` return value. Then call `publish_view(payload=<that exact return value>)` — every key and every array element, copied unchanged into the arguments. The receipt names what happened (what you grounded in, how many tasks, what channels, or — on resume — what changed since last visit and what you're recommending). The dashboard is the durable record the UI renders. Don't dump the project log JSON in the prose; it's already persisted in `$HOME`.
 
 ## Narrate while you work
 

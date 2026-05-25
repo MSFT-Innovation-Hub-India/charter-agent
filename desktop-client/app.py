@@ -973,6 +973,11 @@ class Bridge:
         completed_text_parts: list[str] = []
         consent_payload: dict | None = None
         current_tool: dict[str, str] | None = None
+        # Dashboard sent via the `publish_view` tool's arguments. The model is
+        # instructed to call publish_view(payload=<dashboard_payload return>);
+        # capturing args directly preserves every field (notably the activity
+        # tail) where re-emitting the same JSON in prose tends to drop keys.
+        published_dashboard: dict | None = None
 
         print(f"[bridge] POST {url} session={self.session_id} prev_resp={previous_response_id}", flush=True)
         with httpx.Client(timeout=HTTP_TIMEOUT) as client:
@@ -1019,6 +1024,14 @@ class Bridge:
                         if current_tool is not None:
                             current_tool["args"] = str(data.get("arguments") or current_tool["args"])
                             self._emit("tool.args", {"name": current_tool["name"], "args": current_tool["args"]})
+                            if current_tool["name"] == "publish_view":
+                                try:
+                                    parsed = json.loads(current_tool["args"] or "{}")
+                                    payload = parsed.get("payload") if isinstance(parsed, dict) else None
+                                    if isinstance(payload, dict) and payload.get("kind") == "dashboard":
+                                        published_dashboard = payload
+                                except Exception:  # noqa: BLE001
+                                    pass
                         continue
 
                     if etype == "response.output_text.delta":
@@ -1087,7 +1100,11 @@ class Bridge:
                 self._post_one(prompt, url=url, previous_response_id=response_id)
                 return
 
-        dashboard = _maybe_extract_dashboard(final_text)
+        dashboard = published_dashboard or _maybe_extract_dashboard(final_text)
+        if dashboard is not None:
+            _act = dashboard.get("activity")
+            _src = "publish_view" if published_dashboard is not None else "text-fence"
+            print(f"[bridge] dashboard src={_src} keys={sorted(dashboard.keys())} activity_len={len(_act) if isinstance(_act, list) else 'n/a'}", flush=True)
         # Learn the customer name + skill from the dashboard so the sidebar reflects
         # what the agent actually decided. The skill name is the agent's declaration
         # (written into project_log.json by the chosen skill's kickoff tool); we never
