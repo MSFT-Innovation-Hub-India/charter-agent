@@ -13,6 +13,7 @@ prose — the model writes that.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -586,6 +587,25 @@ def dashboard_payload() -> dict[str, Any]:
 
     submitted_count = sum(1 for t in tasks if t.get("status") in submitted_states)
 
+    # Include the project's activity tail so the desktop client can render the
+    # "ACTIVITY STREAM" panel in hosted mode (where it cannot reach the
+    # microVM's $HOME directly). Last 50 entries, oldest first.
+    activity_tail: list[dict[str, Any]] = []
+    try:
+        act_path = state.home_dir() / "projects" / state.active_project_id() / "activity.json"
+        if act_path.exists():
+            lines = act_path.read_text(encoding="utf-8").splitlines()[-50:]
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    activity_tail.append(json.loads(line))
+                except Exception:  # noqa: BLE001
+                    continue
+    except Exception:  # noqa: BLE001
+        activity_tail = []
+
     return {
         "kind": "dashboard",
         "project": log.get("project_id"),
@@ -598,6 +618,7 @@ def dashboard_payload() -> dict[str, Any]:
         "sections": sections,
         "exceptions": exceptions,
         "deliverable_url": log.get("deliverable", {}).get("url", ""),
+        "activity": activity_tail,
     }
 
 

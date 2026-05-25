@@ -449,9 +449,14 @@ def _dashboard_from_log(log: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _read_activity_tail(limit: int = 200) -> list[dict[str, Any]]:
-    """Return the last `limit` rows from `<AGENT_HOME>/activity.json` (NDJSON)."""
-    p = _AGENT_HOME / "activity.json"
+def _read_activity_tail(pid: str, limit: int = 200) -> list[dict[str, Any]]:
+    """Return the last `limit` rows from the project's activity.json (NDJSON).
+
+    Per-project file lives at `<AGENT_HOME>/projects/<pid>/activity.json`.
+    The agent writes there via `observability.log_activity`, which scopes
+    every entry to the currently-active project.
+    """
+    p = _AGENT_HOME / "projects" / pid / "activity.json"
     if not p.exists():
         return []
     try:
@@ -478,10 +483,15 @@ def _project_view(pid: str, *, mode: str | None = None) -> dict[str, Any]:
     `$HOME` lives in a Foundry microVM we can't read directly, so we fall
     back to the client-side `view_cache.json` populated from the most recent
     `turn.complete` dashboard payload.
+
+    The activity tail is per-project: in local mode we read
+    `<AGENT_HOME>/projects/<pid>/activity.json` directly; in hosted mode we
+    never read the local disk (it would surface entries from unrelated
+    local-mode runs) and rely on the cache only.
     """
     log = _read_project_log(pid)
     dashboard = _dashboard_from_log(log) if log else None
-    activity = _read_activity_tail(200)
+    activity = _read_activity_tail(pid) if mode == "local" else []
     if dashboard is None and mode:
         cache = _load_view_cache().get(f"{mode}/{pid}") or {}
         cached_dash = cache.get("dashboard")
@@ -793,6 +803,16 @@ class Bridge:
             sid = record.get("session_id")
             if sid:
                 self._delete_hosted_session(str(sid))
+        # Purge the client-side view cache for this project so a re-created
+        # project with the same id can't inherit stale tiles/activity.
+        try:
+            cache = _load_view_cache()
+            key = f"{self.mode}/{project_id}"
+            if key in cache:
+                del cache[key]
+                _save_view_cache(cache)
+        except Exception as ex:  # noqa: BLE001
+            logger.debug("view_cache purge failed for %s: %s", project_id, ex)
         del projects[project_id]
         if not projects:
             pid = _gen_project_id()
@@ -1105,6 +1125,13 @@ class Bridge:
         if dashboard:
             live_dash = {k: v for k, v in dashboard.items() if k not in ("from_cache", "saved_at")}
             view["dashboard"] = live_dash
+            # The dashboard payload carries the project's activity tail
+            # (`dashboard.activity`) so hosted mode — which can't read the
+            # microVM's $HOME — still has a real audit stream to render.
+            # Prefer it over the local-disk read for the in-flight view.
+            payload_activity = dashboard.get("activity")
+            if isinstance(payload_activity, list) and payload_activity:
+                view["activity"] = payload_activity
         # Persist the latest dashboard + activity to the client-side cache so
         # the UI can restore them on app restart (essential for hosted mode
         # where the agent's $HOME is inside an inaccessible Foundry microVM).

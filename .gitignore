@@ -154,3 +154,6 @@ $RECYCLE.BIN/
 docker-compose.override.yml
 .docker/
 .azure
+
+# ACR build streaming dumps (from z acr build > file on Windows)
+**/acr_build_output*.txt
