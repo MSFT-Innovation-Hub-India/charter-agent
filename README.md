@@ -137,10 +137,10 @@ Start here, then follow the links that match your task:
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  Desktop Client (pywebview)                                              │
-│  • Signs user in via MSAL / Windows Account Manager (WAM)               │
-│  • Attaches user bearer to every /responses POST                        │
-│  • Renders SSE stream: text deltas, tool activity, dashboard widget     │
-│  • Manages per-project session_id → Foundry microVM routing             │
+│  • Signs user in via MSAL / Windows Account Manager (WAM)                │
+│  • Attaches user bearer to every /responses POST                         │
+│  • Renders SSE stream: text deltas, tool activity, dashboard widget      │
+│  • Manages per-project session_id → Foundry microVM routing              │
 └───────────────────────────┬──────────────────────────────────────────────┘
                             │ HTTPS POST /responses
                             │ Authorization: Bearer <user_token>
@@ -151,29 +151,29 @@ Start here, then follow the links that match your task:
 │                                                                          │
 │  ResponsesHostServer (agent-framework-foundry-hosting)                   │
 │    └─ MAF Agent (warm, one per skill)                                    │
-│         ├─ FoundryChatClient → gpt-5.x (Managed Identity)               │
+│         ├─ FoundryChatClient → gpt-5.x (Managed Identity)                │
 │         ├─ instructions: SKILL.md body                                   │
 │         └─ tools:                                                        │
 │              • MCPStreamableHTTPTool → Charter-Agent-Tools Toolbox       │
 │              • state_tools (read/write/append $HOME files)               │
 │                                                                          │
 │  Per-project microVM sandbox ($HOME)                                     │
-│    project_charter.md  project_log.json  activity.json                  │
+│    project_charter.md  project_log.json  activity.json                   │
 │    agent_session/<id>.json                                               │
 │                                                                          │
 │  Foundry platform                                                        │
 │    • Routes agent_session_id to the correct persistent microVM           │
-│    • Validates user bearer; exchanges into WorkIQ identity on MCP calls │
-│    • Emits oauth_consent_request SSE on first WorkIQ access per user    │
-│    • Auto-instruments: App Insights spans, OTel traces                  │
+│    • Validates user bearer; exchanges into WorkIQ identity on MCP calls  │
+│    • Emits oauth_consent_request SSE on first WorkIQ access per user     │
+│    • Auto-instruments: App Insights spans, OTel traces                   │
 └───────────────────────────┬──────────────────────────────────────────────┘
                             │ MCP (Streamable HTTP)
                             ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  Charter-Agent-Tools Toolbox (Foundry-managed, preview)                  │
-│  Single MCP endpoint → 8 WorkIQ M365 Intelligence servers               │
-│  Mail · Calendar · Teams · Files · Word · OneDrive · User · Copilot     │
-│  135 tools — user identity from Foundry passthrough, not agent secrets  │
+│  Single MCP endpoint → 8 WorkIQ M365 Intelligence servers                │
+│  Mail · Calendar · Teams · Files · Word · OneDrive · User · Copilot      │
+│  135 tools — user identity from Foundry passthrough, not agent secrets   │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
