@@ -6,6 +6,7 @@ metadata:
   version: "0.5"
   scenario: sow-response
   spec: functional-specs/scenarios/sow-response.md
+  background_sync: true
 allowed-tools: >
   load_project_state stamp_project_skill start_charter add_charter_task record_kickoff
   record_submission mark_task_polled record_nudge_sent dashboard_payload publish_view

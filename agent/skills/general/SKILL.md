@@ -5,6 +5,7 @@ metadata:
   owner: charter-agent
   version: "0.1"
   scenario: general
+  background_sync: false
 allowed-tools: >
   route_to_skill log_workflow_step
 ---
