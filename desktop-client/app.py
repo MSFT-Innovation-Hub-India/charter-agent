@@ -95,12 +95,59 @@ SCOPE = "https://ai.azure.com/.default"
 HTTP_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 
 # ---------------------------------------------------------------------------
+# Early env load — desktop-client/.env first, then agent/.env as fallback.
+# Only sets keys absent from the real environment, so shell vars always win.
+# ---------------------------------------------------------------------------
+def _load_env_file(path: "pathlib.Path") -> None:
+    if not path.is_file():
+        return
+    try:
+        for _eline in path.read_text(encoding="utf-8").splitlines():
+            _eline = _eline.strip()
+            if not _eline or _eline.startswith("#"):
+                continue
+            _ek, _, _ev = _eline.partition("=")
+            _ek = _ek.strip()
+            _ev = _ev.strip().strip('"').strip("'")
+            if _ek and _ek not in os.environ:
+                os.environ[_ek] = _ev
+    except Exception:  # noqa: BLE001
+        pass
+
+_load_env_file(pathlib.Path(__file__).resolve().parent / ".env")          # desktop-client/.env
+_load_env_file(pathlib.Path(__file__).resolve().parent.parent / "agent" / ".env")  # agent/.env
+
+# ---------------------------------------------------------------------------
 # Background auto-poll configuration
 # ---------------------------------------------------------------------------
 # Interval between autonomous check-and-continue cycles (in minutes).
+# Override via CHARTER_POLL_INTERVAL_MINS in agent/.env or as a shell env var.
+# Example for fast testing:  CHARTER_POLL_INTERVAL_MINS=2
 _POLL_INTERVAL_MINS: int = int(os.environ.get("CHARTER_POLL_INTERVAL_MINS", "30"))
 # Set CHARTER_POLL_BIZ_HOURS_ONLY=1 to restrict polling to Mon-Fri 07:00-20:00 local.
 _POLL_BIZ_HOURS_ONLY: bool = os.environ.get("CHARTER_POLL_BIZ_HOURS_ONLY", "0") == "1"
+
+# Base directory for skill definitions, relative to this file.
+_SKILLS_BASE_DIR = pathlib.Path(__file__).parent.parent / "agent" / "skills"
+
+
+def _skill_background_sync(skill_name: str) -> bool:
+    """Return True if the skill's SKILL.md declares background_sync: true."""
+    if not skill_name:
+        return False
+    md = _SKILLS_BASE_DIR / skill_name / "SKILL.md"
+    try:
+        text = md.read_text(encoding="utf-8")
+        if text.startswith("---"):
+            end = text.index("---", 3)
+            for line in text[3:end].splitlines():
+                if "background_sync" in line:
+                    val = line.split(":", 1)[1].strip().lower()
+                    return val in ("true", "1", "yes")
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
 
 # Skill-agnostic check prompt — works regardless of which skill is active.
 # The agent reads the skill from the preamble and decides what to do.
@@ -112,34 +159,19 @@ _POLL_CHECK_PROMPT = (
 
 
 def _notify(title: str, msg: str) -> None:
-    """Fire a native Windows toast. Silently no-ops if winotify is not installed."""
+    """Fire a native Windows toast. No-ops if winotify is not installed."""
     try:
         from winotify import Notification  # type: ignore
         _icon = pathlib.Path(__file__).with_name("assets") / "app_icon.png"
         icon = str(_icon) if _icon.exists() else ""
         toast = Notification(app_id="Project Charter", title=title, msg=msg[:300], icon=icon)
         toast.show()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[notify] OS toast failed: %s", exc)
 
 
 def _load_agent_env() -> None:
-    """Best-effort load of `<repo>/agent/.env` so the client picks up FOUNDRY_PROJECT_ENDPOINT."""
-    env_path = pathlib.Path(__file__).resolve().parent.parent / "agent" / ".env"
-    if not env_path.is_file():
-        return
-    try:
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            key = key.strip()
-            val = val.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = val
-    except Exception:  # noqa: BLE001
-        pass
+    """No-op: both .env files are now loaded at module level via _load_env_file."""
 
 
 def _resolve_hosted_url() -> str:
@@ -712,43 +744,67 @@ class AutoPoller:
 
     def _tick(self) -> None:
         if not self._in_business_hours():
-            logger.debug("[poller] outside business hours, skipping")
+            logger.info("[poller] outside business hours, skipping")
             return
 
         bridge = self._bridge
 
         # Require a valid token.
         if not bridge.token or time.time() >= bridge.token_expires_at - 60:
-            logger.debug("[poller] token missing/expired, skipping")
-            return
-
-        # Only check projects that have a live session (kicked off at least once).
-        pid = bridge.project_id
-        project = bridge._current
-        session_id = project.get("session_id")
-        if not session_id:
-            logger.debug("[poller] project %s has no session, skipping", pid)
+            logger.info("[poller] token missing/expired, skipping tick")
             return
 
         # Skip if another turn is already running (non-blocking lock probe).
         if not bridge._lock.acquire(blocking=False):
-            logger.debug("[poller] bridge busy, deferring tick")
+            logger.info("[poller] bridge busy, deferring tick")
             return
         bridge._lock.release()
 
-        project_label = (
-            project.get("customer_name") or project.get("label") or pid
-        )
-        logger.info("[poller] tick project=%s label=%r", pid, project_label)
+        # Collect all projects in the current mode that have a live session and
+        # declare background_sync: true in their skill's SKILL.md.
+        mode_projects = bridge._projects_data.get("projects", {}).get(bridge.mode, {})
+        active_pid = bridge.project_id
+        eligible: list[tuple[str, dict]] = [
+            (pid, proj)
+            for pid, proj in mode_projects.items()
+            if proj.get("session_id") and _skill_background_sync(proj.get("skill") or "general")
+        ]
+        if not eligible:
+            logger.info("[poller] no eligible projects for mode=%r", bridge.mode)
+            return
 
-        # Emit scheduler.tick so the UI shows the "Auto-checking…" indicator.
-        bridge._emit("scheduler.tick", {
-            "project_id": pid,
-            "project_label": project_label,
-            "next_in_mins": _POLL_INTERVAL_MINS,
-        })
-        _notify("Project Charter", f"Checking {project_label}…")
-        bridge._run_auto_check(pid, project_label)
+        # Active project first — user sees their current view update immediately.
+        eligible.sort(key=lambda x: (x[0] != active_pid))
+
+        for pid, project in eligible:
+            if self._stop.is_set():
+                break
+            project_label = project.get("customer_name") or project.get("label") or pid
+            logger.info("[poller] tick project=%s label=%r", pid, project_label)
+
+            bridge._emit("scheduler.tick", {
+                "project_id": pid,
+                "project_label": project_label,
+                "next_in_mins": _POLL_INTERVAL_MINS,
+            })
+            _notify("Project Charter", f"Checking {project_label}…")
+
+            # Build an explicit project context so _post_one writes session updates
+            # to the correct project dict even when pid != the active project.
+            _ctx = {
+                "pid": pid,
+                "session_id": project.get("session_id"),
+                "project_dict": bridge._mode_projects()[pid],
+            }
+            done = threading.Event()
+            bridge._run_auto_check(pid, project_label, _ctx=_ctx, done_event=done)
+            if not done.wait(timeout=300):
+                logger.warning("[poller] auto-check timed out for project %s", pid)
+
+            if self._stop.is_set():
+                break
+            if len(eligible) > 1:
+                time.sleep(3)  # brief gap between sequential project checks
 
 
 class Bridge:
@@ -1198,36 +1254,84 @@ class Bridge:
         threading.Thread(target=self._run_turn, args=(prompt, preamble + prompt, url), daemon=True).start()
         return {"ok": True}
 
-    def _run_auto_check(self, pid: str, project_label: str = "") -> None:
+    def run_now(self) -> dict:
+        """Manually trigger an immediate auto-check for the active project.
+
+        Takes the same code path as the background poller — emits scheduler.tick,
+        calls _run_auto_check (auto=True), and that path emits scheduler.done which
+        triggers both the in-app toast and the OS notification. Unlike send(), this
+        never creates a chat bubble.
+        """
+        if not self.token or time.time() >= self.token_expires_at - 60:
+            r = self.login()
+            if not r.get("ok"):
+                return {"ok": False, "error": "Not signed in"}
+        url = self.endpoints.get(self.mode)
+        if not url:
+            return {"ok": False, "error": "No endpoint configured"}
+        pid = self.project_id
+        project = self._mode_projects().get(pid or "")
+        if not project or not project.get("session_id"):
+            return {"ok": False, "error": "No active session — kick off the SOW first"}
+        project_label = project.get("customer_name") or project.get("label") or pid
+        self._emit("scheduler.tick", {
+            "project_id": pid,
+            "project_label": project_label,
+            "next_in_mins": _POLL_INTERVAL_MINS,
+        })
+        _notify("Project Charter", f"Checking {project_label}…")
+        _ctx = {
+            "pid": pid,
+            "session_id": project.get("session_id"),
+            "project_dict": project,
+        }
+        self._run_auto_check(pid, project_label, _ctx=_ctx)
+        return {"ok": True}
+
+    def _run_auto_check(
+        self,
+        pid: str,
+        project_label: str = "",
+        *,
+        _ctx: dict | None = None,
+        done_event: threading.Event | None = None,
+    ) -> None:
         """Trigger a background 'check and continue' turn for *pid*.
 
-        Snapshots section statuses before the turn so the completion handler
-        can diff and fire a toast if anything changed.
+        _ctx carries the explicit project context (pid, session_id, project_dict)
+        when checking a non-active project. When None, falls back to self._current.
+        done_event is set when the turn completes, allowing the caller to sequence
+        multiple project checks without concurrency.
         """
         url = self.endpoints.get(self.mode)
         if not url:
             logger.debug("[auto] no URL for mode=%r", self.mode)
+            if done_event:
+                done_event.set()
             return
 
-        # Apply the same idle-timeout guard as Bridge.send(): a stale
-        # previous_response_id sent to Foundry causes it to mint a NEW session
-        # (new microVM, blank $HOME) instead of routing to the existing one.
-        # The auto-poller always wakes after >= POLL_INTERVAL_MINS (30 min by
-        # default), well past the 12-min threshold, so this will almost always
-        # clear it — leaving only agent_session_id on the wire, which correctly
-        # resumes the existing VM and its project_log.json.
-        _FOUNDRY_IDLE_SECS = 12 * 60
-        if (
-            self.previous_response_id
-            and self._last_response_at > 0
-            and (time.time() - self._last_response_at) > _FOUNDRY_IDLE_SECS
-        ):
-            logger.info("[auto] clearing stale prev_resp before auto-check (idle %ds)",
-                        int(time.time() - self._last_response_at))
-            self.previous_response_id = None
+        if _ctx is None:
+            # Active-project case: apply the idle-timeout guard.
+            _FOUNDRY_IDLE_SECS = 12 * 60
+            if (
+                self.previous_response_id
+                and self._last_response_at > 0
+                and (time.time() - self._last_response_at) > _FOUNDRY_IDLE_SECS
+            ):
+                logger.info("[auto] clearing stale prev_resp before auto-check (idle %ds)",
+                            int(time.time() - self._last_response_at))
+                self.previous_response_id = None
+            _ctx = {
+                "pid": pid,
+                "session_id": self.session_id,
+                "project_dict": self._current,
+            }
+        # Non-active projects always start with no previous_response_id: the idle
+        # threshold certainly applies when we haven't used that project this session.
+        _ctx.setdefault("prev_resp_id", None)
 
         prev_snap = dict(self._section_snapshots.get(pid, {}))
-        effective_skill = self._current.get("skill") or "general"
+        effective_skill = _ctx["project_dict"].get("skill") or "general"
         preamble = (
             f"[charter-agent-context: project_id={pid} "
             f"is_new=false skill={effective_skill}]\n"
@@ -1240,6 +1344,8 @@ class Bridge:
                 "auto": True,
                 "project_label": project_label,
                 "prev_snap": prev_snap,
+                "_ctx": _ctx,
+                "done_event": done_event,
             },
             daemon=True,
         ).start()
@@ -1284,13 +1390,18 @@ class Bridge:
         auto: bool = False,
         project_label: str = "",
         prev_snap: dict[str, str] | None = None,
+        _ctx: dict | None = None,
+        done_event: "threading.Event | None" = None,
     ) -> None:
         with self._lock:
+            _pid = (_ctx or {}).get("pid") or self.project_id
+            _sid = (_ctx or {}).get("session_id") or self.session_id
+            _prev = (_ctx or {}).get("prev_resp_id", self.previous_response_id)
             self._emit("turn.start", {
                 "prompt": display_prompt,
-                "session_id": self.session_id,
+                "session_id": _sid,
                 "mode": self.mode,
-                "project_id": self.project_id,
+                "project_id": _pid,
                 "auto": auto,
                 "project_label": project_label,
             })
@@ -1298,14 +1409,18 @@ class Bridge:
                 self._post_one(
                     wire_prompt,
                     url=url,
-                    previous_response_id=self.previous_response_id,
+                    previous_response_id=_prev,
                     display_prompt=display_prompt,
                     auto=auto,
                     project_label=project_label,
                     prev_snap=prev_snap or {},
+                    _ctx=_ctx,
                 )
             except Exception as e:  # noqa: BLE001
                 self._emit("turn.error", {"error": str(e), "auto": auto})
+            finally:
+                if done_event:
+                    done_event.set()
 
     def _post_one(
         self,
@@ -1317,16 +1432,25 @@ class Bridge:
         auto: bool = False,
         project_label: str = "",
         prev_snap: dict[str, str] | None = None,
+        _ctx: dict | None = None,
     ) -> None:
         # NB: do NOT set store=False on the host call — the Responses host server
         # uses its own transcript store to resolve previous_response_id, and
         # opting out wipes the model's memory of prior turns (RFP grounding,
         # tool outputs, etc.). The upstream-model `store` flag is pinned in
         # runtime/foundry_host.py, which is the right place for it.
-        _skill_at_start = self._current.get("skill") or "general"
+        #
+        # Resolve the effective project context. _ctx is set for background checks
+        # of non-active projects; it overrides self._current so writes go to the
+        # correct project dict without switching the active-project pointer.
+        _p: dict[str, Any] = (_ctx or {}).get("project_dict") or self._current
+        _pid: str = (_ctx or {}).get("pid") or self.project_id
+        _session_id: str | None = (_ctx or {}).get("session_id") or self.session_id
+
+        _skill_at_start = _p.get("skill") or "general"
         body: dict[str, Any] = {"input": prompt, "stream": True}
-        if self.session_id:
-            body["agent_session_id"] = self.session_id
+        if _session_id:
+            body["agent_session_id"] = _session_id
         if previous_response_id:
             body["previous_response_id"] = previous_response_id
         headers = {
@@ -1334,8 +1458,8 @@ class Bridge:
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
-        if self.session_id:
-            headers["x-agent-chat-isolation-key"] = self.session_id
+        if _session_id:
+            headers["x-agent-chat-isolation-key"] = _session_id
 
         response_id: str | None = None
         completed_text_parts: list[str] = []
@@ -1347,7 +1471,7 @@ class Bridge:
         # tail) where re-emitting the same JSON in prose tends to drop keys.
         published_dashboard: dict | None = None
 
-        logger.debug("[bridge] POST %s session=%s prev_resp=%s", url, self.session_id, previous_response_id)
+        logger.debug("[bridge] POST %s project=%s session=%s prev_resp=%s", url, _pid, _session_id, previous_response_id)
         with httpx.Client(timeout=HTTP_TIMEOUT) as client:
             with client.stream("POST", url, json=body, headers=headers) as resp:
                 logger.debug("[bridge] <- status=%d ct=%s", resp.status_code, resp.headers.get("content-type"))
@@ -1372,25 +1496,27 @@ class Bridge:
                         response_id = resp_obj.get("id") or data.get("id")
                         sid = resp_obj.get("agent_session_id") or data.get("agent_session_id")
                         if sid:
-                            _log_session(self.mode, self.project_id, sid)
-                        if sid and sid != self.session_id:
-                            if self.session_id and previous_response_id:
+                            _log_session(self.mode, _pid, sid)
+                        if sid and sid != _session_id:
+                            if _session_id and previous_response_id:
                                 # Foundry returned a DIFFERENT session_id than we
                                 # sent. This means it rejected our previous_response_id
                                 # and forked a new session with a blank $HOME — the
                                 # original VM state is now orphaned. Warn the user
                                 # rather than silently adopting the new session.
                                 logger.warning(
-                                    "[bridge] session fork detected: sent=%s got=%s — "
+                                    "[bridge] session fork detected project=%s: sent=%s got=%s — "
                                     "Foundry created a new session (stale prev_resp_id). "
                                     "Original $HOME state is orphaned.",
-                                    self.session_id, sid,
+                                    _pid, _session_id, sid,
                                 )
                                 self._emit("session.forked", {
-                                    "old_session_id": self.session_id,
+                                    "old_session_id": _session_id,
                                     "new_session_id": sid,
                                 })
-                            self.session_id = sid
+                            _session_id = sid
+                            _p["session_id"] = sid
+                            _save_projects(self._projects_data)
                             self._emit("session.update", {"session_id": sid})
                         continue
 
@@ -1430,14 +1556,16 @@ class Bridge:
                         resp_obj = data.get("response") or {}
                         sid = resp_obj.get("agent_session_id") or data.get("agent_session_id")
                         if sid:
-                            _log_session(self.mode, self.project_id, sid)
-                        if sid and sid != self.session_id:
-                            if self.session_id and previous_response_id:
+                            _log_session(self.mode, _pid, sid)
+                        if sid and sid != _session_id:
+                            if _session_id and previous_response_id:
                                 logger.warning(
-                                    "[bridge] session fork on completed: sent=%s got=%s",
-                                    self.session_id, sid,
+                                    "[bridge] session fork on completed project=%s: sent=%s got=%s",
+                                    _pid, _session_id, sid,
                                 )
-                            self.session_id = sid
+                            _session_id = sid
+                            _p["session_id"] = sid
+                            _save_projects(self._projects_data)
                             self._emit("session.update", {"session_id": sid})
                         out = resp_obj.get("output") or []
                         for it in out:
@@ -1457,7 +1585,9 @@ class Bridge:
         logger.info("[bridge] stream done: events=%d response_id=%s text_parts=%d consent=%s", event_count, response_id, len(completed_text_parts), consent_payload is not None)
         final_text = "\n".join(completed_text_parts).strip()
         if response_id:
-            self.previous_response_id = response_id
+            if _p.get("previous_response_id") != response_id:
+                _p["previous_response_id"] = response_id
+                _save_projects(self._projects_data)
 
         # The hosted Responses server uses an in-memory transcript store; a
         # container restart silently invalidates every saved
@@ -1477,9 +1607,11 @@ class Bridge:
             and event_count <= 4
         ):
             logger.info("[bridge] empty completion w/ stale prev_resp; retrying without it (keeping session)")
-            self.previous_response_id = None
+            if _p.get("previous_response_id") is not None:
+                _p["previous_response_id"] = None
+                _save_projects(self._projects_data)
             self._post_one(prompt, url=url, previous_response_id=None, display_prompt=display_prompt,
-                           auto=auto, project_label=project_label, prev_snap=prev_snap)
+                           auto=auto, project_label=project_label, prev_snap=prev_snap, _ctx=_ctx)
             return
 
         if consent_payload:
@@ -1492,7 +1624,7 @@ class Bridge:
                     pass
                 time.sleep(8)
                 self._post_one(prompt, url=url, previous_response_id=response_id, display_prompt=display_prompt,
-                               auto=auto, project_label=project_label, prev_snap=prev_snap)
+                               auto=auto, project_label=project_label, prev_snap=prev_snap, _ctx=_ctx)
                 return
 
         dashboard = published_dashboard or _maybe_extract_dashboard(final_text)
@@ -1507,14 +1639,14 @@ class Bridge:
         if dashboard:
             mutated = False
             customer = dashboard.get("customer") or ""
-            if customer and customer != self._current.get("customer_name"):
-                self._current["customer_name"] = customer
-                if (self._current.get("label") or "").lower() in ("", "new project"):
-                    self._current["label"] = customer
+            if customer and customer != _p.get("customer_name"):
+                _p["customer_name"] = customer
+                if (_p.get("label") or "").lower() in ("", "new project"):
+                    _p["label"] = customer
                 mutated = True
             skill_name = dashboard.get("skill") or ""
-            if skill_name and skill_name != self._current.get("skill"):
-                self._current["skill"] = skill_name
+            if skill_name and skill_name != _p.get("skill"):
+                _p["skill"] = skill_name
                 mutated = True
             if mutated:
                 _save_projects(self._projects_data)
@@ -1522,18 +1654,21 @@ class Bridge:
         self._last_response_at = time.time()
         self._emit("turn.complete", {
             "response_id": response_id,
-            "session_id": self.session_id,
-            "project_id": self.project_id,
+            "session_id": _session_id,
+            "project_id": _pid,
             "text": final_text,
             "dashboard": dashboard,
             "auto": auto,
         })
         # Refresh the disk-derived view (activity audit + canonical dashboard
         # from project_log.json) so the UI matches the agent's source of truth.
-        view = _project_view(self.project_id, mode=self.mode)
-        if self._sync_skill_from_view(view):
+        view = _project_view(_pid, mode=self.mode)
+        # _sync_skill_from_view writes to self._current; only call it for the
+        # active project to avoid corrupting the active project's skill record
+        # during a background check of a non-active project.
+        if _pid == self.project_id and self._sync_skill_from_view(view):
             self._emit("projects.update", self._projects_payload())
-            _skill_now = self._current.get("skill") or "general"
+            _skill_now = _p.get("skill") or "general"
             if _skill_now != _skill_at_start and _skill_now != "general":
                 self._emit("skill.routed", {"skill": _skill_now})
         # If this turn produced a fresh dashboard, treat it as live state —
@@ -1559,7 +1694,7 @@ class Bridge:
         if cache_dashboard or view.get("activity"):
             try:
                 cache = _load_view_cache()
-                cache[f"{self.mode}/{self.project_id}"] = {
+                cache[f"{self.mode}/{_pid}"] = {
                     "dashboard": cache_dashboard,
                     "activity": view.get("activity") or [],
                     "saved_at": _now_iso(),
@@ -1571,16 +1706,18 @@ class Bridge:
         # switches away and returns to this project.
         if final_text and display_prompt:
             try:
-                _save_transcript_turn(self.mode, self.project_id, display_prompt, final_text)
+                _save_transcript_turn(self.mode, _pid, display_prompt, final_text)
             except Exception as ex:  # noqa: BLE001
                 logger.debug("transcript save failed: %s", ex)
+        # view.update: always emit; the UI filters by project_id so non-active
+        # project views don't overwrite the dashboard the user is looking at.
         self._emit("view.update", view)
 
         # Always update the section snapshot so the next auto-check can diff accurately.
         current_dash = view.get("dashboard") or {}
         new_sections = current_dash.get("sections") or []
         if new_sections:
-            self._section_snapshots[self.project_id] = {
+            self._section_snapshots[_pid] = {
                 s.get("task_id", ""): s.get("status", "")
                 for s in new_sections
                 if s.get("task_id")
@@ -1599,7 +1736,7 @@ class Bridge:
                     f"{len(changes)} update{'s' if len(changes) > 1 else ''}: {change_lines}",
                 )
             self._emit("scheduler.done", {
-                "project_id": self.project_id,
+                "project_id": _pid,
                 "project_label": project_label,
                 "changes": changes,
                 "next_in_mins": _POLL_INTERVAL_MINS,
