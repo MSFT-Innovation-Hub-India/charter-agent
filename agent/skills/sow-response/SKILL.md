@@ -143,3 +143,5 @@ After each meaningful step — grounding complete, charter committed, each kicko
 ## Closing every turn
 
 End every productive turn with a short conversational receipt, then emit the dashboard. Full format in [`references/OUTPUT_FORMAT.md`](references/OUTPUT_FORMAT.md).
+
+**Critical ordering rule**: call `dashboard_payload` and `publish_view` **only at the very end of the turn**, after every polling call, state mutation (`record_submission`, `record_kickoff`, `record_nudge_sent`), and `log_workflow_step` has completed. Never call `dashboard_payload` or `publish_view` before polling or recording — the snapshot you publish must reflect every change made in this turn. A dashboard published before a `record_submission` call will show the wrong status to the user and cannot be corrected until the next turn.

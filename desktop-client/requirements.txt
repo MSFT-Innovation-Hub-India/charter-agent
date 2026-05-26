@@ -5,3 +5,6 @@ azure-identity>=1.17
 # picker (modal to the app window) instead of opening the system browser.
 # Falls back to InteractiveBrowserCredential automatically if missing.
 azure-identity-broker>=1.3
+# Optional: enables Windows toast notifications for the autonomous background poller.
+# Gracefully absent — the poller runs silently without it.
+winotify>=1.1

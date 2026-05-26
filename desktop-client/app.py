@@ -94,6 +94,34 @@ TENANT_ID = os.environ.get("SPIKE_TENANT_ID") or None
 SCOPE = "https://ai.azure.com/.default"
 HTTP_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 
+# ---------------------------------------------------------------------------
+# Background auto-poll configuration
+# ---------------------------------------------------------------------------
+# Interval between autonomous check-and-continue cycles (in minutes).
+_POLL_INTERVAL_MINS: int = int(os.environ.get("CHARTER_POLL_INTERVAL_MINS", "30"))
+# Set CHARTER_POLL_BIZ_HOURS_ONLY=1 to restrict polling to Mon-Fri 07:00-20:00 local.
+_POLL_BIZ_HOURS_ONLY: bool = os.environ.get("CHARTER_POLL_BIZ_HOURS_ONLY", "0") == "1"
+
+# Skill-agnostic check prompt — works regardless of which skill is active.
+# The agent reads the skill from the preamble and decides what to do.
+_POLL_CHECK_PROMPT = (
+    "Check and continue the agent loop. Poll every owner's reply surface for "
+    "new submissions since the last pass, classify them, update task statuses, "
+    "and give me the digest with any recommended next actions."
+)
+
+
+def _notify(title: str, msg: str) -> None:
+    """Fire a native Windows toast. Silently no-ops if winotify is not installed."""
+    try:
+        from winotify import Notification  # type: ignore
+        _icon = pathlib.Path(__file__).with_name("assets") / "app_icon.png"
+        icon = str(_icon) if _icon.exists() else ""
+        toast = Notification(app_id="Project Charter", title=title, msg=msg[:300], icon=icon)
+        toast.show()
+    except Exception:  # noqa: BLE001
+        pass
+
 
 def _load_agent_env() -> None:
     """Best-effort load of `<repo>/agent/.env` so the client picks up FOUNDRY_PROJECT_ENDPOINT."""
@@ -327,6 +355,10 @@ _PROJECTS_PATH = _APP_HOME / "projects.json"
 # Used to restore the dashboard on app restart for hosted mode, where the
 # agent's $HOME lives in a Foundry microVM the client can't read directly.
 _VIEW_CACHE_PATH = _APP_HOME / "view_cache.json"
+# Append-only NDJSON log of every unique session_id seen, with timestamps.
+# Survives project record overwrites — use this to recover a session ID after
+# a fork (e.g. to file a Foundry bug report).
+_SESSION_LOG_PATH = _APP_HOME / "session_history.ndjson"
 # Per-project conversation transcript stored client-side so it survives
 # project switches. Scoped by mode so local and hosted histories are separate.
 _TRANSCRIPT_DIR = _APP_HOME / "transcripts"
@@ -390,6 +422,34 @@ def _gen_project_id() -> str:
 def _now_iso() -> str:
     import datetime
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+_seen_sessions: set[str] = set()  # in-process dedup so we don't write duplicates in one run
+
+
+def _log_session(mode: str, project_id: str, session_id: str) -> None:
+    """Append a new session_id to the session history log (NDJSON, append-only).
+
+    This is the only place that records session IDs durably. projects.json only
+    keeps the LATEST session per project and gets overwritten on forks — this log
+    survives that and lets you recover the original session ID to file a Foundry bug.
+    """
+    if not session_id or session_id in _seen_sessions:
+        return
+    _seen_sessions.add(session_id)
+    try:
+        _SESSION_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        entry = json.dumps({
+            "at": _now_iso(),
+            "mode": mode,
+            "project_id": project_id,
+            "session_id": session_id,
+        }, ensure_ascii=False)
+        with _SESSION_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(entry + "\n")
+        logger.debug("[session-log] recorded session=%s project=%s", session_id, project_id)
+    except Exception as ex:  # noqa: BLE001
+        logger.debug("[session-log] write failed: %s", ex)
 
 
 _MODES = ("local", "hosted")
@@ -577,6 +637,120 @@ def _project_view(pid: str, *, mode: str | None = None) -> dict[str, Any]:
     }
 
 
+def _diff_sections(
+    prev_snap: dict[str, str],
+    new_sections: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Return sections whose status changed since prev_snap.
+
+    prev_snap maps task_id → previous status string.
+    Each returned dict: {task_id, title, old_status, new_status}.
+    Only reports tasks that were already tracked (no spurious first-run noise).
+    """
+    changes = []
+    for sec in new_sections:
+        tid = sec.get("task_id") or ""
+        new_st = sec.get("status") or ""
+        old_st = prev_snap.get(tid)
+        if old_st is not None and old_st != new_st:
+            changes.append({
+                "task_id": tid,
+                "title": sec.get("title") or tid,
+                "old_status": old_st,
+                "new_status": new_st,
+            })
+    return changes
+
+
+class AutoPoller:
+    """Background scheduler that autonomously triggers a 'check and continue'
+    turn for the active project on a configurable interval.
+
+    Skill-agnostic: the prompt is generic and the agent decides what to do
+    based on the skill declared in the preamble. Works for any skill, not just
+    sow-response.
+
+    Configurable via env vars:
+      CHARTER_POLL_INTERVAL_MINS   — interval in minutes (default 30)
+      CHARTER_POLL_BIZ_HOURS_ONLY  — "1" restricts to Mon-Fri 07:00-20:00 local
+    """
+
+    def __init__(self, bridge: "Bridge") -> None:
+        self._bridge = bridge
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, name="auto-poller", daemon=True)
+        self._thread.start()
+        logger.info("[poller] started interval=%dmin biz_hours_only=%s",
+                    _POLL_INTERVAL_MINS, _POLL_BIZ_HOURS_ONLY)
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _in_business_hours(self) -> bool:
+        if not _POLL_BIZ_HOURS_ONLY:
+            return True
+        import datetime
+        now = datetime.datetime.now()
+        if now.weekday() >= 5:  # Saturday / Sunday
+            return False
+        return 7 <= now.hour < 20
+
+    def _loop(self) -> None:
+        interval_secs = _POLL_INTERVAL_MINS * 60
+        # Initial delay: one full interval before the first auto-check so the
+        # user has time to interact on launch.
+        self._stop.wait(interval_secs)
+        while not self._stop.is_set():
+            try:
+                self._tick()
+            except Exception:  # noqa: BLE001
+                logger.exception("[poller] tick error")
+            self._stop.wait(interval_secs)
+
+    def _tick(self) -> None:
+        if not self._in_business_hours():
+            logger.debug("[poller] outside business hours, skipping")
+            return
+
+        bridge = self._bridge
+
+        # Require a valid token.
+        if not bridge.token or time.time() >= bridge.token_expires_at - 60:
+            logger.debug("[poller] token missing/expired, skipping")
+            return
+
+        # Only check projects that have a live session (kicked off at least once).
+        pid = bridge.project_id
+        project = bridge._current
+        session_id = project.get("session_id")
+        if not session_id:
+            logger.debug("[poller] project %s has no session, skipping", pid)
+            return
+
+        # Skip if another turn is already running (non-blocking lock probe).
+        if not bridge._lock.acquire(blocking=False):
+            logger.debug("[poller] bridge busy, deferring tick")
+            return
+        bridge._lock.release()
+
+        project_label = (
+            project.get("customer_name") or project.get("label") or pid
+        )
+        logger.info("[poller] tick project=%s label=%r", pid, project_label)
+
+        # Emit scheduler.tick so the UI shows the "Auto-checking…" indicator.
+        bridge._emit("scheduler.tick", {
+            "project_id": pid,
+            "project_label": project_label,
+            "next_in_mins": _POLL_INTERVAL_MINS,
+        })
+        _notify("Project Charter", f"Checking {project_label}…")
+        bridge._run_auto_check(pid, project_label)
+
+
 class Bridge:
     """JS-callable surface exposed to the WebView via pywebview's js_api."""
 
@@ -597,6 +771,10 @@ class Bridge:
         self.mode: str = initial_mode if initial_mode in self.endpoints else "hosted"
         self._lock = threading.Lock()
         self._last_response_at: float = 0.0  # epoch time of last completed turn
+        # Per-project task-status snapshots used by the auto-poller to detect
+        # changes between cycles. Shape: {pid: {task_id: status_string}}.
+        # Populated from the dashboard payload on every turn completion.
+        self._section_snapshots: dict[str, dict[str, str]] = {}
 
         # Load projects from disk. Projects are scoped per endpoint mode
         # (local sandboxes vs hosted microVMs are different $HOMEs, so a
@@ -703,6 +881,7 @@ class Bridge:
             "has_record": self._record_saved,
             "projects": self._projects_payload(),
             "view": view,
+            "poll_interval_mins": _POLL_INTERVAL_MINS,
         }
 
     def signin_silent(self) -> dict:
@@ -920,11 +1099,12 @@ class Bridge:
             return {"ok": False, "error": f"unknown mode: {mode}"}
         if not self.endpoints[mode]:
             return {"ok": False, "error": f"endpoint for mode={mode!r} is not configured"}
-        # session_id and previous_response_id are tied to the endpoint that
-        # minted them; carrying them across a mode switch makes the new endpoint
-        # reject the next request (unknown previous_response_id / session).
-        self.session_id = None
-        self.previous_response_id = None
+        # Projects are scoped per-mode: local projects carry local sessions,
+        # hosted projects carry hosted sessions.  Switching modes does NOT mean
+        # we should clear the other mode's sessions — each lives in its own
+        # project record and must survive the switch so "Run now" still routes
+        # back to the correct Foundry microVM.  The old "clear on switch" logic
+        # was written before per-mode projects existed; now it's just harmful.
         self.mode = mode
         self._ensure_seeded_for_mode(mode)
         return {
@@ -1018,6 +1198,52 @@ class Bridge:
         threading.Thread(target=self._run_turn, args=(prompt, preamble + prompt, url), daemon=True).start()
         return {"ok": True}
 
+    def _run_auto_check(self, pid: str, project_label: str = "") -> None:
+        """Trigger a background 'check and continue' turn for *pid*.
+
+        Snapshots section statuses before the turn so the completion handler
+        can diff and fire a toast if anything changed.
+        """
+        url = self.endpoints.get(self.mode)
+        if not url:
+            logger.debug("[auto] no URL for mode=%r", self.mode)
+            return
+
+        # Apply the same idle-timeout guard as Bridge.send(): a stale
+        # previous_response_id sent to Foundry causes it to mint a NEW session
+        # (new microVM, blank $HOME) instead of routing to the existing one.
+        # The auto-poller always wakes after >= POLL_INTERVAL_MINS (30 min by
+        # default), well past the 12-min threshold, so this will almost always
+        # clear it — leaving only agent_session_id on the wire, which correctly
+        # resumes the existing VM and its project_log.json.
+        _FOUNDRY_IDLE_SECS = 12 * 60
+        if (
+            self.previous_response_id
+            and self._last_response_at > 0
+            and (time.time() - self._last_response_at) > _FOUNDRY_IDLE_SECS
+        ):
+            logger.info("[auto] clearing stale prev_resp before auto-check (idle %ds)",
+                        int(time.time() - self._last_response_at))
+            self.previous_response_id = None
+
+        prev_snap = dict(self._section_snapshots.get(pid, {}))
+        effective_skill = self._current.get("skill") or "general"
+        preamble = (
+            f"[charter-agent-context: project_id={pid} "
+            f"is_new=false skill={effective_skill}]\n"
+        )
+        wire_prompt = preamble + _POLL_CHECK_PROMPT
+        threading.Thread(
+            target=self._run_turn,
+            args=(_POLL_CHECK_PROMPT, wire_prompt, url),
+            kwargs={
+                "auto": True,
+                "project_label": project_label,
+                "prev_snap": prev_snap,
+            },
+            daemon=True,
+        ).start()
+
     # ---------- internals ----------
 
     def _parent_hwnd(self) -> int:
@@ -1049,15 +1275,49 @@ class Bridge:
         except Exception as e:  # noqa: BLE001
             logger.warning("[bridge] evaluate_js failed: %s", e)
 
-    def _run_turn(self, display_prompt: str, wire_prompt: str, url: str) -> None:
+    def _run_turn(
+        self,
+        display_prompt: str,
+        wire_prompt: str,
+        url: str,
+        *,
+        auto: bool = False,
+        project_label: str = "",
+        prev_snap: dict[str, str] | None = None,
+    ) -> None:
         with self._lock:
-            self._emit("turn.start", {"prompt": display_prompt, "session_id": self.session_id, "mode": self.mode, "project_id": self.project_id})
+            self._emit("turn.start", {
+                "prompt": display_prompt,
+                "session_id": self.session_id,
+                "mode": self.mode,
+                "project_id": self.project_id,
+                "auto": auto,
+                "project_label": project_label,
+            })
             try:
-                self._post_one(wire_prompt, url=url, previous_response_id=self.previous_response_id, display_prompt=display_prompt)
+                self._post_one(
+                    wire_prompt,
+                    url=url,
+                    previous_response_id=self.previous_response_id,
+                    display_prompt=display_prompt,
+                    auto=auto,
+                    project_label=project_label,
+                    prev_snap=prev_snap or {},
+                )
             except Exception as e:  # noqa: BLE001
-                self._emit("turn.error", {"error": str(e)})
+                self._emit("turn.error", {"error": str(e), "auto": auto})
 
-    def _post_one(self, prompt: str, *, url: str, previous_response_id: str | None, display_prompt: str = "") -> None:
+    def _post_one(
+        self,
+        prompt: str,
+        *,
+        url: str,
+        previous_response_id: str | None,
+        display_prompt: str = "",
+        auto: bool = False,
+        project_label: str = "",
+        prev_snap: dict[str, str] | None = None,
+    ) -> None:
         # NB: do NOT set store=False on the host call — the Responses host server
         # uses its own transcript store to resolve previous_response_id, and
         # opting out wipes the model's memory of prior turns (RFP grounding,
@@ -1111,7 +1371,25 @@ class Bridge:
                         resp_obj = data.get("response") or {}
                         response_id = resp_obj.get("id") or data.get("id")
                         sid = resp_obj.get("agent_session_id") or data.get("agent_session_id")
+                        if sid:
+                            _log_session(self.mode, self.project_id, sid)
                         if sid and sid != self.session_id:
+                            if self.session_id and previous_response_id:
+                                # Foundry returned a DIFFERENT session_id than we
+                                # sent. This means it rejected our previous_response_id
+                                # and forked a new session with a blank $HOME — the
+                                # original VM state is now orphaned. Warn the user
+                                # rather than silently adopting the new session.
+                                logger.warning(
+                                    "[bridge] session fork detected: sent=%s got=%s — "
+                                    "Foundry created a new session (stale prev_resp_id). "
+                                    "Original $HOME state is orphaned.",
+                                    self.session_id, sid,
+                                )
+                                self._emit("session.forked", {
+                                    "old_session_id": self.session_id,
+                                    "new_session_id": sid,
+                                })
                             self.session_id = sid
                             self._emit("session.update", {"session_id": sid})
                         continue
@@ -1151,7 +1429,14 @@ class Bridge:
                     if etype == "response.completed":
                         resp_obj = data.get("response") or {}
                         sid = resp_obj.get("agent_session_id") or data.get("agent_session_id")
+                        if sid:
+                            _log_session(self.mode, self.project_id, sid)
                         if sid and sid != self.session_id:
+                            if self.session_id and previous_response_id:
+                                logger.warning(
+                                    "[bridge] session fork on completed: sent=%s got=%s",
+                                    self.session_id, sid,
+                                )
                             self.session_id = sid
                             self._emit("session.update", {"session_id": sid})
                         out = resp_obj.get("output") or []
@@ -1193,7 +1478,8 @@ class Bridge:
         ):
             logger.info("[bridge] empty completion w/ stale prev_resp; retrying without it (keeping session)")
             self.previous_response_id = None
-            self._post_one(prompt, url=url, previous_response_id=None, display_prompt=display_prompt)
+            self._post_one(prompt, url=url, previous_response_id=None, display_prompt=display_prompt,
+                           auto=auto, project_label=project_label, prev_snap=prev_snap)
             return
 
         if consent_payload:
@@ -1205,7 +1491,8 @@ class Bridge:
                 except Exception:  # noqa: BLE001
                     pass
                 time.sleep(8)
-                self._post_one(prompt, url=url, previous_response_id=response_id, display_prompt=display_prompt)
+                self._post_one(prompt, url=url, previous_response_id=response_id, display_prompt=display_prompt,
+                               auto=auto, project_label=project_label, prev_snap=prev_snap)
                 return
 
         dashboard = published_dashboard or _maybe_extract_dashboard(final_text)
@@ -1239,6 +1526,7 @@ class Bridge:
             "project_id": self.project_id,
             "text": final_text,
             "dashboard": dashboard,
+            "auto": auto,
         })
         # Refresh the disk-derived view (activity audit + canonical dashboard
         # from project_log.json) so the UI matches the agent's source of truth.
@@ -1287,6 +1575,35 @@ class Bridge:
             except Exception as ex:  # noqa: BLE001
                 logger.debug("transcript save failed: %s", ex)
         self._emit("view.update", view)
+
+        # Always update the section snapshot so the next auto-check can diff accurately.
+        current_dash = view.get("dashboard") or {}
+        new_sections = current_dash.get("sections") or []
+        if new_sections:
+            self._section_snapshots[self.project_id] = {
+                s.get("task_id", ""): s.get("status", "")
+                for s in new_sections
+                if s.get("task_id")
+            }
+
+        # If this was a background auto-check, diff and notify on changes.
+        if auto:
+            changes = _diff_sections(prev_snap or {}, new_sections)
+            if changes:
+                change_lines = "; ".join(
+                    f"{c['title']}: {c['old_status']} → {c['new_status']}"
+                    for c in changes
+                )
+                _notify(
+                    f"Project Charter — {project_label}",
+                    f"{len(changes)} update{'s' if len(changes) > 1 else ''}: {change_lines}",
+                )
+            self._emit("scheduler.done", {
+                "project_id": self.project_id,
+                "project_label": project_label,
+                "changes": changes,
+                "next_in_mins": _POLL_INTERVAL_MINS,
+            })
 
 
 def _set_taskbar_icon(hwnd: int) -> None:
@@ -1347,6 +1664,9 @@ def main() -> int:
         return 1
 
     bridge = Bridge(local_url=args.local_url, hosted_url=args.hosted_url, initial_mode=args.mode)
+
+    poller = AutoPoller(bridge)
+    poller.start()
 
     if sys.platform == "win32":
         try:

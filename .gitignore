@@ -157,3 +157,6 @@ docker-compose.override.yml
 
 # ACR build streaming dumps (from z acr build > file on Windows)
 **/acr_build_output*.txt
+
+# Claude Code local settings (machine-specific, not for sharing)
+.claude/settings.local.json
