@@ -61,7 +61,7 @@ A collaborator is internal if their email domain matches the SOW Owner's domain.
 
 ### Resolve the Entra Object ID for internal owners
 
-A user can have multiple UPN aliases in the same tenant (e.g. `sansri@microsoft.com` and `Srikantan.Sankaran@microsoft.com` are the same person). The dashboard uses the immutable Entra Object ID (`oid`) to detect when a task is assigned to the signed-in user, so it can display "You" instead of an email address. Without the OID, that detection fails whenever the meeting notes used an alias that differs from the sign-in UPN.
+A user can have multiple UPN aliases in the same tenant (e.g. `userla@microsoft.com` and `user.lastname@microsoft.com` are the same person). The dashboard uses the immutable Entra Object ID (`oid`) to detect when a task is assigned to the signed-in user, so it can display "You" instead of an email address. Without the OID, that detection fails whenever the meeting notes used an alias that differs from the sign-in UPN.
 
 **For each internal task** (where `is_external=False`), immediately after confirming the `owner_upn` from the meeting notes, call a `WorkIQUser___*` tool to look up that UPN in the directory. Extract the `id` field from the returned user profile — this is the immutable Entra Object ID. Pass it as `owner_oid` when calling `add_charter_task`.
 
