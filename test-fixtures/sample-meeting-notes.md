@@ -1,7 +1,7 @@
 # Northwind Trading Corp — RFP Response Kick-off (SOW for Custom Logistics Platform)
 
 **Meeting date:** [Today's date]
-**Attendees:** Sansri (sansri@microsoft.com), Srikanta (srikantasan@onemtc.net), Kishore P (kishorep@onemtc.net)
+**Attendees:** Ravi Kumar (Ravi KumarRavi Kumar), Praveen (Praveensan@zava.net), Kishore P (kishorep@@zava.net)
 
 ---
 
@@ -11,39 +11,39 @@
 
 ### Context — Northwind RFP
 
-Sansri, Srikanta, and Kishore met to kick off the response to an RFP received from **Northwind Trading Corp** earlier this week. Northwind is asking for a Statement of Work (SOW) for a **custom logistics and order-tracking software platform** to replace their ageing in-house system, with implementation, integration with their existing ERP, UAT, deployment, and an initial twelve months of support and maintenance. The RFP attachment (`Northwind-RFP-LogisticsPlatform-v1.pdf`) was circulated by Northwind's procurement lead, **Eleanor Vance (eleanor.vance@northwindtrading.com)**, and a response is due in **ten business days**.
+Ravi Kumar, Praveen, and Kishore met to kick off the response to an RFP received from **Northwind Trading Corp** earlier this week. Northwind is asking for a Statement of Work (SOW) for a **custom logistics and order-tracking software platform** to replace their ageing in-house system, with implementation, integration with their existing ERP, UAT, deployment, and an initial twelve months of support and maintenance. The RFP attachment (`Northwind-RFP-LogisticsPlatform-v1.pdf`) was circulated by Northwind's procurement lead, **Eleanor Vance (eleanor.vance@northwindtrading.com)**, and a response is due in **ten business days**.
 
-Sansri is the SOW Owner. The internal review will be done by the regional delivery head and the practice lead before the SOW goes back to Eleanor. The team is treating this as a Tier-1 pursuit — the deal size is meaningful and the customer relationship is new.
+Ravi Kumar is the SOW Owner. The internal review will be done by the regional delivery head and the practice lead before the SOW goes back to Eleanor. The team is treating this as a Tier-1 pursuit — the deal size is meaningful and the customer relationship is new.
 
 - **Customer Position:** Northwind has emphasised three things in the RFP — a fixed go-live target of **end of Q1 next year**, a strong preference for a **milestone-based commercial model**, and a hard requirement that the platform integrate cleanly with their existing **SAP S/4HANA** ERP and their carrier-facing EDI gateway. Eleanor has indicated that two other vendors are also responding; price alone will not win it, but a clearly substantiated plan and credible case studies will.
 - **SOW Structure Agreed:** The team agreed the SOW response will be assembled in **four sections**, matching the structure Northwind asked for in their RFP — Technical Scope, Project Management & Delivery Approach, Commercial Terms, and Relevant Case Studies & Credentials. Each section needs to be detailed enough that Northwind's evaluation committee can score it without follow-up clarifications.
-- **Internal vs External Framing:** Sansri reminded the team that the internal working draft can carry more candour on risks and assumptions than the version Northwind sees. The team will maintain a single working document and produce the customer-facing version at the end.
+- **Internal vs External Framing:** Ravi Kumar reminded the team that the internal working draft can carry more candour on risks and assumptions than the version Northwind sees. The team will maintain a single working document and produce the customer-facing version at the end.
 
 ### Workstream Assignments
 
 The four SOW sections were assigned with target dates ahead of the internal review on **Day 8** and the customer submission on **Day 10**.
 
-- **Technical Scope (Srikanta):** Srikanta will own the Technical Scope section — solution architecture, the proposed tech stack, the SAP S/4HANA integration approach, the EDI gateway integration, data migration from Northwind's legacy system, the test strategy, and the deployment / cutover plan. He will draft this as a Word document by **Day 5 EOD**. He flagged that the EDI gateway specifics in the RFP are thin and that he will raise a clarification question to Eleanor in the next two days.
+- **Technical Scope (Praveen):** Praveen will own the Technical Scope section — solution architecture, the proposed tech stack, the SAP S/4HANA integration approach, the EDI gateway integration, data migration from Northwind's legacy system, the test strategy, and the deployment / cutover plan. He will draft this as a Word document by **Day 5 EOD**. He flagged that the EDI gateway specifics in the RFP are thin and that he will raise a clarification question to Eleanor in the next two days.
 - **Project Management & Delivery (Kishore):** Kishore will own the PM & Delivery section — the proposed delivery methodology (hybrid Agile with milestone gates), the team structure and role mix, the governance cadence, the risk and issue management approach, the change-control process, and the assumptions and dependencies on Northwind. He will produce this as a Word document by **Day 5 EOD**.
-- **Commercial Terms (Sansri):** Sansri will draft the Commercial Terms section — the milestone-based payment schedule aligned with the RFP's go-live target, the rate card for time-and-materials work beyond scope, the assumptions underpinning the pricing, and the support-and-maintenance pricing for the first twelve months. He will produce this as an Excel pricing model plus a Word narrative, by **Day 6 EOD**.
-- **Case Studies & Credentials (Kishore, with Sansri):** Kishore will pull together three relevant case studies from the practice's reference library — ideally two logistics-domain engagements and one SAP-integration engagement — anonymised where required. Sansri will review and select the final two that go into the SOW. Target **Day 6 EOD**.
-- **Assembled Draft & Reconciliation (Sansri):** Sansri will own the final assembled SOW. He will run the cross-section reconciliation — that the timeline in the PM section matches the milestones in the Commercial section, that the team mix in the PM section matches the effort assumed in the Commercial pricing, and that the integration scope in the Technical section is consistent with the assumptions called out in the PM section. Assembled draft for internal review by **Day 7 EOD**.
+- **Commercial Terms (Ravi Kumar):** Ravi Kumar will draft the Commercial Terms section — the milestone-based payment schedule aligned with the RFP's go-live target, the rate card for time-and-materials work beyond scope, the assumptions underpinning the pricing, and the support-and-maintenance pricing for the first twelve months. He will produce this as an Excel pricing model plus a Word narrative, by **Day 6 EOD**.
+- **Case Studies & Credentials (Kishore, with Ravi Kumar):** Kishore will pull together three relevant case studies from the practice's reference library — ideally two logistics-domain engagements and one SAP-integration engagement — anonymised where required. Ravi Kumar will review and select the final two that go into the SOW. Target **Day 6 EOD**.
+- **Assembled Draft & Reconciliation (Ravi Kumar):** Ravi Kumar will own the final assembled SOW. He will run the cross-section reconciliation — that the timeline in the PM section matches the milestones in the Commercial section, that the team mix in the PM section matches the effort assumed in the Commercial pricing, and that the integration scope in the Technical section is consistent with the assumptions called out in the PM section. Assembled draft for internal review by **Day 7 EOD**.
 
 ### Discussion of Customer-Facing Sensitivities
 
 The team discussed what to lean into and what to be careful with in the version that goes to Northwind.
 
-- **EDI Gateway Uncertainty:** Srikanta noted that the RFP is light on the EDI gateway specifics and that the technical assumptions will need to be explicit. The team agreed to call these out clearly in the Technical Scope's "Assumptions" subsection rather than hide them in the commercial fine print.
+- **EDI Gateway Uncertainty:** Praveen noted that the RFP is light on the EDI gateway specifics and that the technical assumptions will need to be explicit. The team agreed to call these out clearly in the Technical Scope's "Assumptions" subsection rather than hide them in the commercial fine print.
 - **Fixed Go-Live Date:** Kishore raised that the end-of-Q1 go-live target is aggressive given the integration surface area. The team agreed the PM section should propose the date but make the dependencies on Northwind (timely SAP access, UAT user availability, data migration sign-off windows) very explicit, so that any slippage attributable to Northwind is clearly traceable.
-- **Pricing Posture:** Sansri said the commercial posture should be a competitive but defensible milestone-based price, with the support-and-maintenance year priced separately so Northwind can opt in or out without re-opening the build pricing. Both Srikanta and Kishore agreed.
+- **Pricing Posture:** Ravi Kumar said the commercial posture should be a competitive but defensible milestone-based price, with the support-and-maintenance year priced separately so Northwind can opt in or out without re-opening the build pricing. Both Praveen and Kishore agreed.
 
 ### Internal Review and Customer Submission
 
 The team agreed on the review cadence ahead of the customer submission.
 
-- **Internal Review:** **Day 8** morning, with the regional delivery head and the practice lead. Sansri will share the assembled draft the previous evening. Any feedback gets incorporated on Day 8 afternoon and Day 9.
-- **Final QA Pass:** **Day 9** afternoon — Sansri runs a final consistency and tone pass on the customer-facing version.
-- **Customer Submission:** **Day 10** before 5pm IST. Sansri will send the final SOW PDF to Eleanor with Srikanta and Kishore on copy.
+- **Internal Review:** **Day 8** morning, with the regional delivery head and the practice lead. Ravi Kumar will share the assembled draft the previous evening. Any feedback gets incorporated on Day 8 afternoon and Day 9.
+- **Final QA Pass:** **Day 9** afternoon — Ravi Kumar runs a final consistency and tone pass on the customer-facing version.
+- **Customer Submission:** **Day 10** before 5pm IST. Ravi Kumar will send the final SOW PDF to Eleanor with Praveen and Kishore on copy.
 
 ---
 
@@ -51,27 +51,27 @@ The team agreed on the review cadence ahead of the customer submission.
 
 **Technical Scope Section:**
 Draft the Technical Scope of the SOW — architecture, tech stack, SAP S/4HANA integration, EDI gateway integration, data migration, test strategy, deployment plan. Raise EDI clarification questions to Eleanor in parallel. Due Day 5 EOD.
-*(Srikanta  — srikantasan@onemtc.net)*
+*(Praveen  — Praveensan@@zava.net)*
 
 **Project Management & Delivery Section:**
 Draft the PM & Delivery section — methodology, team structure, governance, risk/issue management, change control, assumptions, customer dependencies. Due Day 5 EOD.
-*(Kishore P — kishorep@onemtc.net)*
+*(Kishore P — kishorep@@zava.net)*
 
 **Case Studies & Credentials Section:**
 Shortlist three relevant case studies from the practice reference library (two logistics, one SAP integration), anonymise where required, draft the credentials narrative. Due Day 6 EOD.
-*(Kishore P — kishorep@onemtc.net)*
+*(Kishore P — kishorep@@zava.net)*
 
 **Commercial Terms Section:**
 Draft the milestone-based payment schedule, T&M rate card, pricing assumptions, and twelve-month support-and-maintenance pricing. Produce as an Excel pricing model plus a Word narrative. Due Day 6 EOD.
-*(Srikantan.Sankaran@microsoft.com)*
+*(Praveenn.Sankaran@contoso.com)*
 
 **Assembled SOW Draft for Internal Review:**
 Consolidate all four sections into the working SOW document, run cross-section reconciliation (timeline vs milestones, team mix vs pricing, technical scope vs PM assumptions), share with the regional delivery head and the practice lead. Due Day 7 EOD.
-*(Srikantan.Sankaran@microsoft.com)*
+*(Praveenn.Sankaran@contoso.com)*
 
 **Final Submission to Northwind:**
-Run final QA pass, generate customer-facing PDF, send to Eleanor Vance (eleanor.vance@northwindtrading.com) with Srikanta and Kishore on copy. Due Day 10 before 5pm IST.
-*(Srikantan.Sankaran@microsoft.com)*
+Run final QA pass, generate customer-facing PDF, send to Eleanor Vance (eleanor.vance@northwindtrading.com) with Praveen and Kishore on copy. Due Day 10 before 5pm IST.
+*(Praveenn.Sankaran@contoso.com)*
 
 ---
 
