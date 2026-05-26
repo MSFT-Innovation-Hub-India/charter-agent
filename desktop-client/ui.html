@@ -31,12 +31,16 @@
   body { display: flex; flex-direction: column; }
   header.app {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 18px; background: var(--panel);
-    border-bottom: 1px solid var(--line);
+    padding: 0 18px; height: 48px; background: #0f1117;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
     flex: 0 0 auto;
+    box-shadow: 0 1px 8px rgba(0,0,0,0.18);
   }
-  header.app h1 { margin: 0; font-size: 15px; font-weight: 600; }
-  header.app .meta { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+  header.app h1 {
+    margin: 0; font-size: 14px; font-weight: 600; color: #fff;
+    letter-spacing: 0.01em;
+  }
+  header.app .meta { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: rgba(255,255,255,0.45); }
   header.app .controls { display: flex; gap: 8px; align-items: center; }
   .btn {
     background: var(--accent); color: white; border: 0;
@@ -54,17 +58,18 @@
   /* Service-status pills (Foundry, WorkIQ) — light up when used this turn */
   .svc-pills { display: flex; gap: 6px; align-items: center; margin-right: 8px; }
   .svc-pill {
-    font-size: 11px; padding: 3px 8px; border-radius: 999px;
-    background: var(--pill-bg); color: var(--muted);
+    font-size: 11px; padding: 3px 9px; border-radius: 999px;
+    background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.55);
+    border: 1px solid rgba(255,255,255,0.12);
     display: inline-flex; align-items: center; gap: 5px;
   }
   .svc-pill::before {
-    content: ""; width: 7px; height: 7px; border-radius: 50%;
-    background: var(--line); display: inline-block;
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: rgba(255,255,255,0.25); display: inline-block;
   }
-  .svc-pill.live { background: #dafbe1; color: #1a7f37; }
-  .svc-pill.live::before { background: #1a7f37; box-shadow: 0 0 4px #1a7f37; }
-  .svc-pill.warm { background: #fff8c5; color: #7d5e00; }
+  .svc-pill.live { background: rgba(26,127,55,0.25); color: #4ac26b; border-color: rgba(74,194,107,0.3); }
+  .svc-pill.live::before { background: #4ac26b; box-shadow: 0 0 5px rgba(74,194,107,0.7); }
+  .svc-pill.warm { background: rgba(212,167,44,0.2); color: #d4a72c; border-color: rgba(212,167,44,0.3); }
   .svc-pill.warm::before { background: #d4a72c; }
 
   /* Inline phase cards in the chat stream — historical "this happened"
@@ -114,13 +119,26 @@
   .tile {
     border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
     background: var(--panel); display: flex; flex-direction: column; gap: 8px;
+    border-left: 3px solid var(--line);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+    transition: box-shadow 0.15s, transform 0.15s;
   }
+  .tile:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.09); transform: translateY(-1px); }
+  .tile.tile-assigned    { border-left-color: var(--assigned); }
+  .tile.tile-kicked_off  { border-left-color: var(--inprogress); }
+  .tile.tile-inprogress  { border-left-color: var(--inprogress); }
+  .tile.tile-atrisk      { border-left-color: var(--atrisk); }
+  .tile.tile-submitted   { border-left-color: var(--submitted); }
+  .tile.tile-submitted_with_gaps { border-left-color: var(--question); }
+  .tile.tile-reconcile   { border-left-color: var(--reconcile); }
+  .tile.tile-closed      { border-left-color: var(--submitted); }
   .tile-head { display: flex; align-items: center; gap: 10px; }
   .avatar {
-    width: 30px; height: 30px; border-radius: 50%;
-    background: var(--line-soft); color: var(--muted);
+    width: 32px; height: 32px; border-radius: 50%;
+    background: var(--line-soft); color: white;
     display: flex; align-items: center; justify-content: center;
-    font-size: 11px; font-weight: 600; flex-shrink: 0;
+    font-size: 11px; font-weight: 700; flex-shrink: 0;
+    box-shadow: 0 0 0 2px var(--panel);
   }
   .avatar.you { background: var(--accent); color: white; }
   .tile-id { flex: 1; min-width: 0; }
@@ -134,14 +152,20 @@
   }
   .section-label .hint { text-transform: none; letter-spacing: 0; color: var(--muted); font-weight: 400; }
   .proposal-card {
-    background: var(--line-soft); border-radius: 8px; padding: 14px 16px; margin-top: 18px;
+    background: var(--line-soft); border-radius: 10px; padding: 14px 16px; margin-top: 18px;
+    border: 1px solid var(--line);
   }
   .proposal-head { display: flex; align-items: center; justify-content: space-between; }
   .proposal-title { font-size: 14px; font-weight: 600; }
   .proposal-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
-  .proposal-pct { font-size: 22px; font-weight: 500; color: var(--muted); }
-  .proposal-bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 10px; overflow: hidden; }
-  .proposal-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.4s; }
+  .proposal-pct { font-size: 24px; font-weight: 700; color: var(--ink); }
+  .proposal-steps { display: flex; gap: 5px; margin-top: 12px; }
+  .proposal-step {
+    flex: 1; height: 6px; border-radius: 3px;
+    background: var(--line); transition: background 0.3s;
+  }
+  .proposal-step.done { background: var(--submitted); }
+  .proposal-step.partial { background: var(--inprogress); opacity: 0.45; }
   .activity-stream {
     background: var(--line-soft); border-radius: 8px; padding: 8px 10px;
     max-height: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
@@ -150,17 +174,28 @@
   .stream-item .body { color: var(--ink); }
   .stream-item .foot { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .pill {
-    display: inline-block; padding: 2px 7px; border-radius: 999px;
-    font-size: 11px; font-weight: 600; color: white;
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    border: 1px solid transparent;
   }
-  .pill.assigned { background: var(--assigned); }
-  .pill.inprogress { background: var(--inprogress); }
-  .pill.atrisk { background: var(--atrisk); }
-  .pill.submitted { background: var(--submitted); }
-  .pill.kicked_off { background: var(--inprogress); }
-  .pill.submitted_with_gaps { background: var(--question); }
-  .pill.reconcile { background: var(--reconcile); }
-  .pill.closed { background: var(--submitted); }
+  .pill::before { content: ""; width: 5px; height: 5px; border-radius: 50%; display: inline-block; }
+  .pill.assigned { background: #f0f0f2; color: #57606a; border-color: #d0d7de; }
+  .pill.assigned::before { background: #6e7781; }
+  .pill.kicked_off { background: #ddf4ff; color: #0550ae; border-color: #b6e3ff; }
+  .pill.kicked_off::before { background: #0969da; }
+  .pill.inprogress { background: #ddf4ff; color: #0550ae; border-color: #b6e3ff; }
+  .pill.inprogress::before { background: #0969da; }
+  .pill.atrisk { background: #fdf3f8; color: #9a1566; border-color: #f1b8e4; }
+  .pill.atrisk::before { background: #bf3989; }
+  .pill.submitted { background: #dafbe1; color: #116329; border-color: #aceebb; }
+  .pill.submitted::before { background: #1a7f37; }
+  .pill.submitted_with_gaps { background: #fffbdd; color: #735c0f; border-color: #e3c34a; }
+  .pill.submitted_with_gaps::before { background: #9a6700; }
+  .pill.reconcile { background: #fbefff; color: #622cbc; border-color: #d8b4fe; }
+  .pill.reconcile::before { background: #8250df; }
+  .pill.closed { background: #dafbe1; color: #116329; border-color: #aceebb; }
+  .pill.closed::before { background: #1a7f37; }
   .exceptions { display: flex; flex-direction: column; gap: 6px; }
   .exception {
     padding: 6px 8px; border-radius: 5px; border-left: 3px solid var(--question);
@@ -177,13 +212,19 @@
   /* Quick actions */
   .quick {
     flex: 0 0 auto;
-    padding: 8px 18px;
+    padding: 7px 18px;
     background: var(--panel);
     border-bottom: 1px solid var(--line-soft);
     display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
   }
-  .quick .label { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-right: 4px; }
-  .quick .btn { padding: 4px 10px; font-size: 12.5px; }
+  .quick .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-right: 4px; }
+  .quick .btn { padding: 5px 12px; font-size: 12.5px; }
+  .quick .btn.primary-qa {
+    background: var(--accent); color: #fff; border: 0;
+    font-weight: 600;
+  }
+  .quick .btn.primary-qa:hover { background: #0759b8; }
+  .quick-sep { width: 1px; height: 18px; background: var(--line); margin: 0 2px; }
 
   /* Middle row: projects sidebar (left) + main content (right) */
   .middle { flex: 1 1 auto; display: flex; min-height: 0; }
@@ -191,7 +232,7 @@
   aside.projects {
     width: 230px; flex: 0 0 230px;
     border-right: 1px solid var(--line);
-    background: var(--panel);
+    background: #f3f4f7;
     display: flex; flex-direction: column;
     overflow: hidden;
     transition: width 0.18s ease, flex-basis 0.18s ease;
@@ -203,11 +244,11 @@
   /* Hamburger toggle in the header */
   .hamburger {
     background: transparent; border: 1px solid transparent;
-    color: var(--ink); font-size: 18px; line-height: 1;
+    color: rgba(255,255,255,0.7); font-size: 18px; line-height: 1;
     padding: 4px 8px; border-radius: 6px; cursor: pointer;
     margin-right: 8px;
   }
-  .hamburger:hover { background: rgba(0,0,0,0.05); border-color: var(--line); }
+  .hamburger:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.14); }
   .proj-head {
     padding: 10px 12px; border-bottom: 1px solid var(--line-soft);
     display: flex; align-items: center; justify-content: space-between;
@@ -221,10 +262,11 @@
     border-left: 3px solid transparent;
     display: flex; flex-direction: column; gap: 2px;
   }
-  .proj-item:hover { background: rgba(0,0,0,0.03); }
+  .proj-item:hover { background: rgba(0,0,0,0.04); }
   .proj-item.active {
-    background: rgba(9, 105, 218, 0.08);
+    background: #fff;
     border-left-color: var(--accent);
+    box-shadow: inset 0 0 0 1px rgba(9,105,218,0.12);
   }
   .proj-item .label { font-size: 13px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .proj-item .date { font-size: 10px; color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
@@ -269,10 +311,10 @@
   /* Sidebar footer (bottom) — user identity + session/endpoint meta + actions */
   .proj-footer {
     flex: 0 0 auto;
-    border-top: 1px solid var(--line-soft);
+    border-top: 1px solid var(--line);
     padding: 10px 12px 12px;
     display: flex; flex-direction: column; gap: 6px;
-    background: var(--panel);
+    background: #f3f4f7;
   }
   .proj-footer .user-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .proj-footer .user-avatar {
@@ -445,14 +487,24 @@
     border-top: 1px solid var(--line);
     padding: 10px 18px;
     display: flex; gap: 8px; align-items: flex-end;
+    box-shadow: 0 -2px 10px rgba(0,0,0,0.04);
   }
   footer.input textarea {
-    flex: 1; resize: none; min-height: 42px; max-height: 140px;
-    padding: 10px 12px; border-radius: 6px; border: 1px solid var(--line);
+    flex: 1; resize: none; min-height: 44px; max-height: 140px;
+    padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line);
     font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: white; color: var(--ink);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04) inset;
+    transition: border-color 0.15s, box-shadow 0.15s;
   }
-  footer.input textarea:focus { outline: none; border-color: var(--accent); }
+  footer.input textarea:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(9,105,218,0.12);
+  }
+  footer.input .btn {
+    padding: 10px 18px; font-size: 13px; font-weight: 600; border-radius: 10px;
+    align-self: flex-end;
+  }
 </style>
 </head>
 <body>
@@ -467,8 +519,9 @@
       <span class="svc-pill" id="svcFoundry" title="Foundry / host model">Foundry</span>
       <span class="svc-pill" id="svcWorkIQ" title="WorkIQ Toolbox">WorkIQ</span>
     </div>
-    <label class="meta" for="modeSelect" style="text-transform:uppercase;letter-spacing:0.04em;font-size:11px;">Run against</label>
-    <select id="modeSelect" class="btn secondary" style="padding:5px 8px;font-size:12.5px;">
+    <label class="meta" for="modeSelect" style="text-transform:uppercase;letter-spacing:0.04em;font-size:11px;color:rgba(255,255,255,0.4);">Run against</label>
+    <select id="modeSelect" class="btn secondary" style="padding:5px 8px;font-size:12.5px;background:#1e2130;color:rgba(255,255,255,0.8);border-color:rgba(255,255,255,0.15);">
+
       <option value="hosted">Hosted (Foundry)</option>
       <option value="local">Local agent</option>
     </select>
@@ -513,7 +566,8 @@
 
 <div class="quick">
   <span class="label">Quick actions</span>
-  <button class="btn secondary qa" data-prompt="I just received an RFP. Run the sow-response skill end-to-end — ground the project from the RFP and any kickoff meeting notes or email, write the charter and project log, and fan out kickoff messages to every owner. Only stop to ask me something if you can't find the RFP or the kickoff context.">Kick off a new SOW</button>
+  <button class="btn primary-qa qa" data-prompt="I just received an RFP. Run the sow-response skill end-to-end — ground the project from the RFP and any kickoff meeting notes or email, write the charter and project log, and fan out kickoff messages to every owner. Only stop to ask me something if you can't find the RFP or the kickoff context.">Kick off a new SOW</button>
+  <div class="quick-sep"></div>
   <button class="btn secondary qa" data-prompt="Check and continue the agent loop. Poll every owner's reply surface for new submissions since the last pass, classify them, update task statuses, and give me the digest with any recommended next actions.">Check and continue</button>
   <button class="btn secondary qa" data-prompt="Show me the project_charter.md you wrote for this project.">Show charter</button>
 </div>
@@ -1022,6 +1076,16 @@ function initials(name) {
   return parts.map(p => p[0] || "").join("").toUpperCase() || "?";
 }
 
+const AVATAR_PALETTE = [
+  "#5b6af0","#e05e94","#0aa4a4","#e07f35","#7c4dce","#2e9e5e","#c04040","#3a7ebf"
+];
+function avatarColor(name) {
+  if (!name) return AVATAR_PALETTE[0];
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
+  return AVATAR_PALETTE[h % AVATAR_PALETTE.length];
+}
+
 function fmtStreamTime(iso) {
   if (!iso) return "";
   try {
@@ -1068,10 +1132,11 @@ function renderDashboard(d) {
     );
     const displayOwner = isYou ? "You" : escapeHtml(s.owner || "—");
     const avatarClass = isYou ? "avatar you" : "avatar";
+    const avatarStyle = isYou ? "" : ` style="background:${avatarColor(s.owner || s.task_id)}"`;
     return `
-      <div class="tile">
+      <div class="tile tile-${escapeHtml(st)}">
         <div class="tile-head">
-          <div class="${avatarClass}">${escapeHtml(initials(s.owner || s.task_id))}</div>
+          <div class="${avatarClass}"${avatarStyle}>${escapeHtml(initials(s.owner || s.task_id))}</div>
           <div class="tile-id">
             <div class="name">${displayOwner}</div>
             <div class="role">${escapeHtml(s.task_id || "")}</div>
@@ -1119,7 +1184,7 @@ function renderDashboard(d) {
     </div>
     <div class="dash-row">
       <div>
-        <div class="section-label">Section owners <span class="hint">· one tile per charter section</span></div>
+        <div class="section-label">Section owners</div>
         <div class="tiles">${tiles || '<div class="dash-empty" style="padding:0;">No sections yet.</div>'}</div>
 
         <div class="proposal-card">
@@ -1130,7 +1195,12 @@ function renderDashboard(d) {
             </div>
             <div class="proposal-pct">${pct}%</div>
           </div>
-          <div class="proposal-bar"><div class="proposal-fill" style="width:${pct}%"></div></div>
+          <div class="proposal-steps">${
+            Array.from({length: prog.total || 4}, (_, i) => {
+              const cls = i < (prog.submitted || 0) ? "done" : (i === (prog.submitted || 0) && pct > 0 ? "partial" : "");
+              return `<div class="proposal-step ${cls}"></div>`;
+            }).join("")
+          }</div>
           ${deliverableHtml ? `<div style="margin-top:8px;">${deliverableHtml}</div>` : ""}
         </div>
       </div>
