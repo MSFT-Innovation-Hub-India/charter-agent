@@ -643,8 +643,8 @@
 
 <div class="quick">
   <span class="label">Quick actions</span>
-  <button class="btn primary-qa qa" data-prompt="I just received an RFP. Run the sow-response skill end-to-end — ground the project from the RFP and any kickoff meeting notes or email, write the charter and project log, and fan out kickoff messages to every owner. Only stop to ask me something if you can't find the RFP or the kickoff context.">Kick off a new SOW</button>
-  <div class="quick-sep"></div>
+  <button id="kickoffSowBtn" class="btn primary-qa qa" data-prompt="I just received an RFP. Run the sow-response skill end-to-end — ground the project from the RFP and any kickoff meeting notes or email, write the charter and project log, and fan out kickoff messages to every owner. Only stop to ask me something if you can't find the RFP or the kickoff context.">Kick off a new SOW</button>
+  <div id="kickoffSowSep" class="quick-sep"></div>
   <button class="btn secondary" id="runNowBtn" title="Run an immediate check cycle — same as the auto-poller; shows toast + OS notification on completion">Run now ↻</button>
   <button class="btn secondary qa" data-prompt="Show me the project_charter.md you wrote for this project.">Show charter</button>
 </div>
@@ -1299,6 +1299,13 @@ function renderDashboard(d) {
   const prog = d.progress || { submitted: 0, total: sections.length || 0 };
   const pct = prog.total ? Math.round(100 * (prog.submitted || 0) / prog.total) : 0;
   const headerStatus = d.status || "kicked_off";
+
+  // Hide "Kick off a new SOW" once an SOW is underway for this project.
+  const sowActive = sections.length > 0;
+  const kickoffBtn = document.getElementById("kickoffSowBtn");
+  const kickoffSep = document.getElementById("kickoffSowSep");
+  if (kickoffBtn) kickoffBtn.style.display = sowActive ? "none" : "";
+  if (kickoffSep) kickoffSep.style.display = sowActive ? "none" : "";
   // Normalize to CSS class name (in_progress → inprogress) and pick the clearer
   // workflow-level label so the pill reads "Collecting" rather than "In progress".
   const headerCssClass = headerStatus.replace(/_/g, "");
@@ -1769,6 +1776,11 @@ function loadActiveProjectView(payload) {
   if (view && view.dashboard) {
     renderDashboard(view.dashboard);
   } else {
+    // No dashboard yet — show the kickoff button so a fresh project can start.
+    const kickoffBtn = document.getElementById("kickoffSowBtn");
+    const kickoffSep = document.getElementById("kickoffSowSep");
+    if (kickoffBtn) kickoffBtn.style.display = "";
+    if (kickoffSep) kickoffSep.style.display = "";
     const _ap = payload && payload.list && (payload.list.find(p => p.id === payload.active) || {});
     const _label = (_ap && _ap.label) || "project";
     const _skill = (_ap && _ap.skill) || "";
