@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -42,7 +41,6 @@ _http_client: Any | None = None
 _token_provider: Any | None = None
 _toolbox_url: str | None = None
 _toolbox_name: str | None = None
-_sessions: dict[str, Any] = {}
 _agents: dict[str, Any] = {}
 
 
@@ -250,29 +248,6 @@ def get_all_agents() -> dict[str, Any]:
     if not _agents:
         raise RuntimeError("foundry_host.bootstrap() must be called first.")
     return dict(_agents)
-
-
-def get_session(session_id: str) -> Any:
-    """Resume the MAF `AgentSession` for `session_id`, or create one and persist it."""
-    if _chat_client is None:
-        raise RuntimeError("foundry_host.bootstrap() must be called before get_session().")
-
-    if session_id in _sessions:
-        return _sessions[session_id]
-
-    session_file = home_dir() / "agent_session" / f"{session_id}.json"
-    session_file.parent.mkdir(parents=True, exist_ok=True)
-    resumed = session_file.exists()
-    if not resumed:
-        session_file.write_text("{}", encoding="utf-8")
-    thread = {"resumed": resumed, "path": str(session_file)}
-
-    _sessions[session_id] = thread
-    return thread
-
-
-def session_path(session_id: str) -> Path:
-    return home_dir() / "agent_session" / f"{session_id}.json"
 
 
 async def run_skill(

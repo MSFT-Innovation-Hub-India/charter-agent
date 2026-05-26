@@ -16,10 +16,8 @@ behaviour (the narrative record the dashboard renders), not telemetry.
 
 from __future__ import annotations
 
-import json
 import os
 from datetime import UTC, datetime
-from pathlib import Path
 
 from azure.ai.projects.telemetry import trace_function
 from opentelemetry import trace
@@ -42,13 +40,18 @@ class ProcessAttributesSpanProcessor(SpanProcessor):
 
 
 def log_activity(
-    home: Path,
     *,
     actor: str,
     kind: str,
     summary: str,
     ref: str | None = None,
 ) -> None:
+    """Append one entry to the per-project audit log (``activity.json``).
+
+    Routes through ``state.append_ndjson`` so all ``$HOME`` I/O goes through
+    the single path-containment-checked gateway. Imported lazily to keep the
+    dependency one-directional (state → observability is forbidden).
+    """
     entry = {
         "at": datetime.now(UTC).isoformat(),
         "actor": actor,
@@ -57,14 +60,7 @@ def log_activity(
         "ref": ref,
         "span_id": format(trace.get_current_span().get_span_context().span_id, "016x"),
     }
-    # Scope the audit log per active project so deleting / switching projects
-    # doesn't leak history across them. Imported lazily to avoid a top-level
-    # cycle (state itself does not import observability today, but keep it
-    # one-directional in case it ever does).
     from . import state  # noqa: PLC0415
 
     pid = state.active_project_id()
-    path = home / "projects" / pid / "activity.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    state.append_ndjson(f"projects/{pid}/activity.json", entry)

@@ -999,8 +999,6 @@ function finishActiveTool(state) {
   activeTool = null;
 }
 
-function startBusy() { /* per-step indicators now live in the Activity pane */ }
-function stopBusy() { /* no-op — kept for call-site compatibility */ }
 
 function setSession(sid) {
   sessionMeta.textContent = sid ? `session: ${sid}` : "session: (none — platform will assign)";
@@ -1080,7 +1078,7 @@ function renderDashboard(d) {
           </div>
         </div>
         <div class="section">${escapeHtml(s.title || "—")}</div>
-        <div><span class="pill ${escapeHtml(st)}">${escapeHtml(label)}</span></div>
+        <div><span class="pill ${escapeHtml(st === "overdue" ? "atrisk" : st)}">${escapeHtml(label)}</span></div>
         ${s.last_signal ? `<div class="signal">${escapeHtml(s.last_signal)}</div>` : ""}
       </div>`;
   }).join("");
@@ -1099,7 +1097,7 @@ function renderDashboard(d) {
         </div>`).join("")
     : `<div class="dash-empty" style="padding:0;">No activity yet.</div>`;
 
-  const deliverableHtml = d.deliverable_url
+  const deliverableHtml = d.deliverable_url && /^https?:\/\//i.test(d.deliverable_url)
     ? `<a class="deliverable-link" href="${escapeHtml(d.deliverable_url)}" target="_blank" rel="noopener">Open the consolidated deliverable →</a>`
     : "";
 
@@ -1176,13 +1174,11 @@ async function sendPrompt(text) {
   currentAgentMsg.classList.add("thinking");
   currentAgentMsg.setAttribute("data-thinking-label", "Thinking…");
   setBusy(true);
-  startBusy();
   const r = await window.pywebview.api.send(text);
   if (!r || !r.ok) {
     currentAgentMsg.textContent = `error: ${(r && r.error) || "unknown"}`;
     currentAgentMsg.parentElement.classList.add("error");
     setBusy(false);
-    stopBusy();
   }
 }
 
@@ -1199,13 +1195,11 @@ async function _autoTriggerSkill() {
   currentAgentMsg.classList.add("thinking");
   currentAgentMsg.setAttribute("data-thinking-label", "Starting up…");
   setBusy(true);
-  startBusy();
   const r = await window.pywebview.api.send("proceed", targetSkill);
   if (!r || !r.ok) {
     currentAgentMsg.textContent = `error: ${(r && r.error) || "unknown"}`;
     currentAgentMsg.parentElement.classList.add("error");
     setBusy(false);
-    stopBusy();
   }
 }
 
@@ -1271,7 +1265,6 @@ window.onAgentEvent = function (msg) {
       if (p.session_id) setSession(p.session_id);
       shownPhaseCards.clear();
       setBusy(false);
-      stopBusy();
       currentAgentMsg = null;
       {
         const routed = _pendingSkillRoute;
@@ -1294,7 +1287,6 @@ window.onAgentEvent = function (msg) {
       }
       shownPhaseCards.clear();
       setBusy(false);
-      stopBusy();
       break;
     case "consent.required":
       addMsg("system", "consent", `Opening consent URL in browser: ${p.url}\nAfter you grant consent, the turn will retry automatically.`);
@@ -1309,9 +1301,8 @@ window.onAgentEvent = function (msg) {
       if (p.dashboard) renderDashboard(p.dashboard);
       break;
     case "skill.routed":
-      // Skill changed this turn (e.g. general → sow-response). Auto-trigger the
-      // new skill so it starts immediately without the user needing to re-prompt.
-      setTimeout(_autoTriggerSkill, 400);
+      // turn.complete already schedules _autoTriggerSkill when _pendingSkillRoute
+      // is set. This event is informational only — no duplicate schedule.
       break;
   }
 };
@@ -1451,9 +1442,10 @@ function loadActiveProjectView(payload) {
     const _ap = payload && payload.list && (payload.list.find(p => p.id === payload.active) || {});
     const _label = (_ap && _ap.label) || "project";
     const _skill = (_ap && _ap.skill) || "";
-    const _hint = _skill === "sow-response"
-      ? `Ask "show me where we are" to get the latest digest, or use a quick-action.`
-      : `Ask me anything, or say "I have an RFP" to start an SOW response.`;
+    const _skillHints = {
+      "sow-response": `Ask "show me where we are" to get the latest digest, or use a quick-action.`,
+    };
+    const _hint = _skillHints[_skill] || `Ask me anything, or say "I have an RFP" to start an SOW response.`;
     dashboard.innerHTML = `<div class="dash-empty">Switched to <b>${escapeHtml(_label)}</b>. ${_hint}</div>`;
   }
   setSession((payload && payload.session_id) || null);

@@ -12,9 +12,9 @@ strips the preamble so the skill body never sees it. The mechanism is generic
 and skill-agnostic: any future skill running on this host inherits the same
 per-project sandbox without knowing project switching exists.
 
-The parsed `skill` name (if present) is stored in `_last_routed_skill` and
-exposed via `last_routed_skill()`. The host reads this to dispatch the request
-to the correct warm Agent before invoking the model.
+The parsed `skill` name (if present) is returned as the second element of
+the tuple from `route_input_items()`. The host stores it in a per-request
+local variable and uses it to dispatch to the correct warm Agent.
 
 See `AGENTS.md` invariants 1, 2, 6, 12: project switching is a cross-cutting
 concern, not a workflow step inside any one skill.
@@ -40,15 +40,6 @@ _PREAMBLE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Last skill name parsed from a preamble on this request; None if no preamble
-# or no skill field was present. Reset at the start of each routing call.
-_last_routed_skill: str | None = None
-
-
-def last_routed_skill() -> str | None:
-    """Return the skill name parsed from the most recent `route_input_items` call."""
-    return _last_routed_skill
-
 
 def _strip_preamble_text(text: str) -> tuple[str, str | None, bool, str | None]:
     """Return `(stripped_text, project_id_or_None, is_new, skill_or_None)`."""
@@ -68,37 +59,34 @@ def _apply(pid: str, is_new: bool) -> None:
         _log.warning("project_router: rejected project_id %r (%s); leaving active project unchanged.", pid, e)
         return
     log_activity(
-        state.home_dir(),
         actor="host",
         kind="project.switch",
         summary=f"active project = {pid}" + (" (new)" if is_new else ""),
     )
 
 
-def route_input_items(items: Any) -> Any:
-    """Mutate Responses input items in place: strip the preamble line from the
-    first text-bearing content, side-effect `state.set_active_project_id`, and
-    store the parsed skill name in `_last_routed_skill`.
+def route_input_items(items: Any) -> tuple[Any, str | None]:
+    """Strip the preamble from the first text-bearing input item, set the active
+    project, and return ``(items, skill_or_None)``.
+
+    Returning the skill name directly (instead of stashing it in a module
+    global) makes concurrent requests safe — each caller holds its own
+    reference and there is no shared mutable state.
 
     Handles three shapes seen in `agent_framework_foundry_hosting`:
-      - `items` is a plain string (the original `request.input`).
-      - `items` is a list of `Item` Pydantic models with `.content` blocks
-        whose `.text` attribute holds the user message.
+      - `items` is a plain string (the original ``request.input``).
+      - `items` is a list of ``Item`` Pydantic models with ``.content`` blocks.
       - `items` is a list of plain dicts mirroring the same shape.
     """
-    global _last_routed_skill
-    _last_routed_skill = None  # reset for this request
-
     if isinstance(items, str):
         new_text, pid, is_new, skill = _strip_preamble_text(items)
         if pid:
             _apply(pid, is_new)
-            _last_routed_skill = skill
-            return new_text
-        return items
+            return new_text, skill
+        return items, None
 
     if not items:
-        return items
+        return items, None
 
     for it in items:
         content = getattr(it, "content", None)
@@ -117,7 +105,6 @@ def route_input_items(items: Any) -> Any:
             if pid is None:
                 continue
             _apply(pid, is_new)
-            _last_routed_skill = skill
             if hasattr(blk, "text"):
                 try:
                     setattr(blk, "text", new_text)
@@ -125,7 +112,7 @@ def route_input_items(items: Any) -> Any:
                     pass
             elif isinstance(blk, dict):
                 blk["text"] = new_text
-            return items
+            return items, skill
         # only inspect the first content-bearing item
-        return items
-    return items
+        return items, None
+    return items, None

@@ -80,9 +80,10 @@ def _build_resilient_host(all_agents: dict[str, Any], default_skill: str) -> Any
             original_get_history = context.get_history
             original_get_input_items = context.get_input_items
 
-            # Cache for the pre-routed items so the wrapped getter returns them
-            # unchanged — avoids double-consuming a non-idempotent source.
+            # Per-request locals — no shared module state, so concurrent
+            # requests never see each other's skill or cached items.
             _cached_items: list[Any] | None = None
+            _routed_skill: str | None = None
 
             async def safe_get_history():  # type: ignore[no-untyped-def]
                 try:
@@ -95,11 +96,11 @@ def _build_resilient_host(all_agents: dict[str, Any], default_skill: str) -> Any
                     return []
 
             async def routed_get_input_items(*args, **kwargs):  # type: ignore[no-untyped-def]
-                nonlocal _cached_items
+                nonlocal _cached_items, _routed_skill
                 if _cached_items is not None:
                     return _cached_items
                 items = await original_get_input_items(*args, **kwargs)
-                _cached_items = project_router.route_input_items(items)
+                _cached_items, _routed_skill = project_router.route_input_items(items)
                 return _cached_items
 
             # ── Pre-route ─────────────────────────────────────────────────
@@ -108,14 +109,14 @@ def _build_resilient_host(all_agents: dict[str, Any], default_skill: str) -> Any
             # project log to resolve the skill for this request.
             try:
                 raw = await original_get_input_items()
-                _cached_items = project_router.route_input_items(raw)
+                _cached_items, _routed_skill = project_router.route_input_items(raw)
             except Exception as ex:  # noqa: BLE001
                 _log.warning("pre-routing failed (%s); skill falls back to default.", ex)
 
             # ── Resolve skill ──────────────────────────────────────────────
             # Priority: preamble field > project_log["skill"] > default.
             skill_name = (
-                project_router.last_routed_skill()
+                _routed_skill
                 or _resolve_project_skill(self._default_skill)
             )
             agent = self._all_agents.get(skill_name)

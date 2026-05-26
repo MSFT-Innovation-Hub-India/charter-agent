@@ -112,7 +112,7 @@ def _append_log_entry(log: dict[str, Any], kind: str, summary: str, ref: str | N
 
 
 def _audit(kind: str, summary: str, ref: str | None = None) -> None:
-    log_activity(state.home_dir(), actor="agent", kind=kind, summary=summary, ref=ref)
+    log_activity(actor="agent", kind=kind, summary=summary, ref=ref)
 
 
 def _is_overdue(task: dict[str, Any]) -> bool:
@@ -135,6 +135,10 @@ def _recompute_project_status(log: dict[str, Any]) -> str:
     if statuses <= {"submitted", "submitted_with_gaps"}:
         return "submitted_with_gaps"
     if any(t.get("submissions") for t in tasks):
+        return "in_progress"
+    # Overdue tasks mean work is at risk — surface as in_progress so the PM
+    # sees there's action needed rather than a stale "kicked_off" signal.
+    if "overdue" in statuses:
         return "in_progress"
     if any(t.get("kickoff_sent", {}).get("at") for t in tasks):
         return "kicked_off"
@@ -489,9 +493,9 @@ def record_submission(
     elif accepted:
         task["status"] = "submitted_with_gaps"
     else:
-        task["status"] = "in_progress"
-    if _is_overdue(task):
-        task["status"] = "overdue"
+        # Reply did not address the runbook; overdue check applies only here
+        # so an accepted submission is never demoted back to overdue.
+        task["status"] = "overdue" if _is_overdue(task) else "in_progress"
     task["last_polled_at"] = now
 
     log["status"] = _recompute_project_status(log)
@@ -620,9 +624,9 @@ def dashboard_payload() -> dict[str, Any]:
     # arrays get silently truncated/dropped.
     activity_tail: list[dict[str, Any]] = []
     try:
-        act_path = state.home_dir() / "projects" / state.active_project_id() / "activity.json"
-        if act_path.exists():
-            lines = act_path.read_text(encoding="utf-8").splitlines()[-15:]
+        act_rel = state.project_path("activity.json")
+        if state.exists(act_rel):
+            lines = state.read_text(act_rel).splitlines()[-15:]
             for line in lines:
                 line = line.strip()
                 if not line:

@@ -30,6 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "python-dotenv",
   "ruff",
   "pyright",
   "pytest",

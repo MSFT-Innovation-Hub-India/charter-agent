@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import cast
 
 from opentelemetry import trace
@@ -58,8 +59,6 @@ def _boot() -> None:
     # present. In a hosted-agent container the file is absent and the platform
     # supplies env directly. `override=False` — existing env wins.
     try:
-        from pathlib import Path
-
         from dotenv import load_dotenv
 
         load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)

@@ -687,7 +687,7 @@ class Bridge:
     # ---------- lifecycle ----------
 
     def ready(self) -> dict:
-        print(f"[bridge] ready() called mode={self.mode!r} url={self.endpoints.get(self.mode, '')!r}", flush=True)
+        logger.debug("[bridge] ready() called mode=%r url=%r", self.mode, self.endpoints.get(self.mode, ""))
         view = _project_view(self.project_id, mode=self.mode)
         self._sync_skill_from_view(view)
         return {
@@ -720,7 +720,7 @@ class Bridge:
             silent_cred = _build_credential(self._parent_hwnd(), silent_only=True)
             tok = silent_cred.get_token(SCOPE)
         except Exception as e:  # noqa: BLE001
-            print(f"[bridge] signin_silent failed: {e}", flush=True)
+            logger.debug("[bridge] signin_silent failed: %s", e)
             return {"ok": False, "error": str(e)}
         # Don't cache the silent-only credential into self._credential: a later
         # token refresh might genuinely need to pop the WAM picker, and the
@@ -731,7 +731,7 @@ class Bridge:
         self.user_name = _decode_jwt_name(tok.token)
         self.user_upn = _decode_jwt_upn(tok.token)
         self.user_oid = _decode_jwt_oid(tok.token)
-        print(f"[bridge] signin_silent ok user={self.user_name!r} upn={self.user_upn!r} oid={self.user_oid!r}", flush=True)
+        logger.debug("[bridge] signin_silent ok user=%r upn=%r oid=%r", self.user_name, self.user_upn, self.user_oid)
         return {"ok": True, "expires_on": int(tok.expires_on), "user_name": self.user_name, "user_upn": self.user_upn, "user_oid": self.user_oid}
 
     # ---------- projects API ----------
@@ -823,15 +823,15 @@ class Bridge:
             # Refuse to delete anything outside the agent's projects subtree.
             target.relative_to(base)
         except Exception as ex:  # noqa: BLE001
-            print(f"[bridge] delete_local refused {project_id!r}: {ex}", flush=True)
+            logger.warning("[bridge] delete_local refused %r: %s", project_id, ex)
             return
         if not target.is_dir():
             return
         try:
             shutil.rmtree(target)
-            print(f"[bridge] delete_local removed {target}", flush=True)
+            logger.debug("[bridge] delete_local removed %s", target)
         except Exception as ex:  # noqa: BLE001
-            print(f"[bridge] delete_local failed for {target}: {ex}", flush=True)
+            logger.warning("[bridge] delete_local failed for %s: %s", target, ex)
 
     def _delete_hosted_session(self, session_id: str) -> None:
         """Best-effort DELETE of the Foundry agentserver session microVM.
@@ -849,7 +849,7 @@ class Bridge:
         base = re.sub(r"/protocols/openai/responses(\?.*)?$", "", url)
         token = self.token
         if not token:
-            print(f"[bridge] delete_hosted skipped (no token) session={session_id}", flush=True)
+            logger.debug("[bridge] delete_hosted skipped (no token) session=%s", session_id)
             return
         candidates = [
             f"{base}/agent-sessions/{session_id}?api-version=v1",
@@ -862,11 +862,11 @@ class Bridge:
                         candidate,
                         headers={"Authorization": f"Bearer {token}"},
                     )
-                print(f"[bridge] delete_hosted {resp.status_code} {candidate}", flush=True)
+                logger.debug("[bridge] delete_hosted %d %s", resp.status_code, candidate)
                 if resp.status_code in (200, 202, 204, 404):
                     return  # 404 = already gone, treat as success
             except Exception as ex:  # noqa: BLE001
-                print(f"[bridge] delete_hosted error {candidate}: {ex}", flush=True)
+                logger.warning("[bridge] delete_hosted error %s: %s", candidate, ex)
 
     def delete_project(self, project_id: str) -> dict:
         projects = self._mode_projects()
@@ -936,7 +936,7 @@ class Bridge:
         }
 
     def login(self) -> dict:
-        print("[bridge] login() called — invoking credential.get_token", flush=True)
+        logger.debug("[bridge] login() called — invoking credential.get_token")
         try:
             if self._credential is None:
                 self._credential = _build_credential(self._parent_hwnd())
@@ -1004,11 +1004,7 @@ class Bridge:
             and self._last_response_at > 0
             and (time.time() - self._last_response_at) > _FOUNDRY_IDLE_SECS
         ):
-            print(
-                f"[bridge] clearing stale prev_resp after "
-                f"{int(time.time() - self._last_response_at)}s idle",
-                flush=True,
-            )
+            logger.info("[bridge] clearing stale prev_resp after %ds idle", int(time.time() - self._last_response_at))
             self.previous_response_id = None
 
         # skill override: caller (e.g. auto-trigger after routing) can supply the
@@ -1051,7 +1047,7 @@ class Bridge:
         try:
             self._window.evaluate_js(f"window.onAgentEvent && window.onAgentEvent({msg})")
         except Exception as e:  # noqa: BLE001
-            print(f"[bridge] evaluate_js failed: {e}", file=sys.stderr)
+            logger.warning("[bridge] evaluate_js failed: %s", e)
 
     def _run_turn(self, display_prompt: str, wire_prompt: str, url: str) -> None:
         with self._lock:
@@ -1091,13 +1087,13 @@ class Bridge:
         # tail) where re-emitting the same JSON in prose tends to drop keys.
         published_dashboard: dict | None = None
 
-        print(f"[bridge] POST {url} session={self.session_id} prev_resp={previous_response_id}", flush=True)
+        logger.debug("[bridge] POST %s session=%s prev_resp=%s", url, self.session_id, previous_response_id)
         with httpx.Client(timeout=HTTP_TIMEOUT) as client:
             with client.stream("POST", url, json=body, headers=headers) as resp:
-                print(f"[bridge] <- status={resp.status_code} ct={resp.headers.get('content-type')}", flush=True)
+                logger.debug("[bridge] <- status=%d ct=%s", resp.status_code, resp.headers.get("content-type"))
                 if resp.status_code >= 400:
                     err = resp.read().decode("utf-8", errors="replace")
-                    print(f"[bridge] error body: {err[:2000]}", flush=True)
+                    logger.debug("[bridge] error body: %s", err[:2000])
                     self._emit("turn.error", {"error": f"HTTP {resp.status_code}: {err[:2000]}"})
                     return
                 event_count = 0
@@ -1106,7 +1102,7 @@ class Bridge:
                     data = evt["data"]
                     etype_dbg = (data.get("type") if isinstance(data, dict) else None) or evt.get("event")
                     if event_count <= 5 or event_count % 25 == 0:
-                        print(f"[bridge] evt#{event_count} type={etype_dbg}", flush=True)
+                        logger.debug("[bridge] evt#%d type=%s", event_count, etype_dbg)
                     if not isinstance(data, dict):
                         continue
                     etype = data.get("type") or evt["event"]
@@ -1173,7 +1169,7 @@ class Bridge:
                         self._emit("turn.error", {"error": f"{etype}: {json.dumps(data)[:1500]}"})
                         return
 
-        print(f"[bridge] stream done: events={event_count} response_id={response_id} text_parts={len(completed_text_parts)} consent={consent_payload is not None}", flush=True)
+        logger.info("[bridge] stream done: events=%d response_id=%s text_parts=%d consent=%s", event_count, response_id, len(completed_text_parts), consent_payload is not None)
         final_text = "\n".join(completed_text_parts).strip()
         if response_id:
             self.previous_response_id = response_id
@@ -1195,7 +1191,7 @@ class Bridge:
             and not final_text
             and event_count <= 4
         ):
-            print("[bridge] empty completion w/ stale prev_resp; retrying without it (keeping session)", flush=True)
+            logger.info("[bridge] empty completion w/ stale prev_resp; retrying without it (keeping session)")
             self.previous_response_id = None
             self._post_one(prompt, url=url, previous_response_id=None, display_prompt=display_prompt)
             return
@@ -1216,7 +1212,7 @@ class Bridge:
         if dashboard is not None:
             _act = dashboard.get("activity")
             _src = "publish_view" if published_dashboard is not None else "text-fence"
-            print(f"[bridge] dashboard src={_src} keys={sorted(dashboard.keys())} activity_len={len(_act) if isinstance(_act, list) else 'n/a'}", flush=True)
+            logger.debug("[bridge] dashboard src=%s keys=%s activity_len=%s", _src, sorted(dashboard.keys()), len(_act) if isinstance(_act, list) else "n/a")
         # Learn the customer name + skill from the dashboard so the sidebar reflects
         # what the agent actually decided. The skill name is the agent's declaration
         # (written into project_log.json by the chosen skill's kickoff tool); we never
@@ -1317,7 +1313,6 @@ def _set_taskbar_icon(hwnd: int) -> None:
         ico = str(APP_ICON_ICO)
         hicon_big = user32.LoadImageW(None, ico, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
         hicon_small = user32.LoadImageW(None, ico, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
-        print(f"[icon] hwnd=0x{hwnd:x} big={hicon_big} small={hicon_small} ico={ico}", flush=True)
         logger.info("icon: hwnd=0x%x big=%s small=%s file=%s", hwnd, hicon_big, hicon_small, ico)
         if hicon_big:
             user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
@@ -1344,11 +1339,11 @@ def main() -> int:
         args.hosted_url = _resolve_hosted_url()
 
     if args.mode == "hosted" and not args.hosted_url:
-        print("[warn] AGENT_ENDPOINT_HOSTED not set; starting in 'local' mode.", file=sys.stderr)
+        logger.warning("AGENT_ENDPOINT_HOSTED not set; starting in 'local' mode.")
         args.mode = "local"
 
     if not UI_HTML.exists():
-        print(f"!! missing ui.html at {UI_HTML}", file=sys.stderr)
+        logger.error("missing ui.html at %s", UI_HTML)
         return 1
 
     bridge = Bridge(local_url=args.local_url, hosted_url=args.hosted_url, initial_mode=args.mode)
@@ -1387,10 +1382,10 @@ def main() -> int:
                     if hwnd:
                         break
                     time.sleep(0.1)
-                print(f"[startup] hwnd=0x{hwnd:x} title={WINDOW_TITLE!r}", flush=True)
+                logger.debug("[startup] hwnd=0x%x title=%r", hwnd, WINDOW_TITLE)
                 _set_taskbar_icon(int(hwnd))
             except Exception as ex:  # noqa: BLE001
-                print(f"[startup] hook failed: {ex}", flush=True)
+                logger.warning("[startup] hook failed: %s", ex)
 
         threading.Thread(target=_worker, name="taskbar-icon", daemon=True).start()
 

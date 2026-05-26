@@ -156,7 +156,6 @@ def log_workflow_step(kind: str, summary: str, ref: str = "") -> str:
             this step touched. Pass an empty string when not applicable.
     """
     log_activity(
-        state.home_dir(),
         actor="agent",
         kind=kind,
         summary=summary,
