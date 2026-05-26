@@ -1,303 +1,267 @@
-# charter-agent
+# Charter Agent — Foundry Hosted Agent Reference Implementation
 
-A Microsoft Foundry **hosted agent** that turns a natural-language project
-brief into a ratified Project Charter, fans out the workstreams across
-Microsoft 365 (SharePoint, Teams, Outlook, email) via the **WorkIQ MCP
-servers**, watches the channels for deliveries, infers status, drafts
-nudges/reassignments for human approval, and consolidates the final
-artifact. The workspace dissolves when the project closes.
+A production-grade reference implementation of a **Microsoft Foundry hosted agent** that autonomously orchestrates multi-week, cross-functional M365 workflows — without the user telling it what to do next.
 
-> **This is a sample / reference implementation**, not a shipping product.
-> It exists alongside other agents in the `WorkIQ-Sample-Agents` family and
-> is the canonical example of a **Foundry hosted agent that calls WorkIQ on
-> behalf of the calling end user** via the platform's OAuth Identity
-> Passthrough mechanism.
+> This is the canonical example of a Foundry hosted agent calling WorkIQ M365 Intelligence on behalf of the signed-in user via OAuth Identity Passthrough at the Foundry MCP connection layer.
 
-## Where to read next
+---
 
-The repository is documented in layers — start at the top and descend only
-as far as the change you're making requires.
+## The scenario: why this agent is compelling
 
-| Document | Purpose | When to read |
+When an enterprise wins an RFP and needs to produce a Statement of Work, a Programme Manager (the "SOW Owner") faces a coordination challenge that spans days or weeks:
+
+- Pull the RFP requirements and the meeting notes from Teams, email, or SharePoint
+- Draft a project charter allocating each SOW section to an internal or external collaborator
+- Fan out kickoff briefs — Teams DMs for internals, emails for externals — with per-section runbook requirements extracted from the RFP
+- Wait days or weeks for replies to arrive across any channel (email, Teams, shared OneDrive docs)
+- Chase up missing or incomplete submissions
+- Validate each reply against the RFP requirements
+- Consolidate everything into a final Word document
+
+**The agent does all of this autonomously.** The SOW Owner's only job is the first prompt ("I received an RFP from Contoso — the kickoff call happened today, go get started") and occasional approvals before outbound messages are sent. Everything else — monitoring channels, classifying incoming content, updating status, drafting nudges, identifying gaps — the agent handles on its own, picking up exactly where it left off even after days of inactivity.
+
+---
+
+## The workflow lifecycle in detail
+
+This section walks through what actually happens across the multi-week lifecycle of a single project. The agent is stateless between calls — it reconstructs its position entirely from files — but to the SOW Owner it behaves like a persistent coordinator that never forgets and never misses a channel.
+
+### Day 0 — kickoff
+
+The SOW Owner types a single message:
+
+> *"We just had the kickoff call for the Contoso RFP. It came as a Teams meeting. Go pull the details and get us started."*
+
+The agent runs its tool loop without any further prompting:
+
+1. **Grounds** — calls WorkIQ Copilot to surface the kickoff meeting in the user's M365 estate. Reads the Teams meeting transcript to extract agreed owners and due dates. Reads the RFP document (from email attachment, SharePoint, or OneDrive — wherever it lives) to extract per-section requirements.
+
+2. **Applies the two-source rule** — owners come exclusively from the meeting notes (never from the RFP, which names customer contacts, not internal staff). Requirements come from the RFP. Where these conflict, the agent flags the discrepancy before committing anything.
+
+3. **Drafts the charter** — writes `project_charter.md` to the microVM sandbox. This is the ratified, immutable record of who owns what, with per-section runbook requirements extracted verbatim from the RFP language.
+
+4. **Fans out** — sends a kickoff brief to every section owner. Internal collaborators (same Entra tenant) receive a Teams DM; external collaborators receive an email. Each brief contains the specific requirements that person's section must address. The agent **never sends without showing the SOW Owner the draft first** — outbound is approval-gated.
+
+5. **Records state** — writes `project_log.json` (task list, kickoff timestamps, last-polled cursors) and appends to `activity.json` (the audit trail). Calls `publish_view` so the desktop dashboard widget updates immediately.
+
+6. **Returns a closing receipt** — four sentences or fewer. "Charter committed. Four kickoff briefs sent (3 Teams DMs, 1 email). Awaiting submissions. I'll check back when you ask."
+
+### Days 1–14 — monitoring (each time the SOW Owner checks in)
+
+The SOW Owner doesn't need to say "check for replies" — a simple "how are we doing?" or "any updates?" is enough. The agent:
+
+1. **Reads project state** — loads `project_log.json` to know what's been sent, what's been received, and when each task was last polled.
+
+2. **Polls all channels simultaneously** — checks Mail, Teams, SharePoint, and OneDrive for activity since the last cursor, for each task owner. The M365 surface doesn't matter: a reply by email is treated the same as a Teams message or a shared OneDrive document. The agent's eyes span the entire collaboration surface.
+
+3. **Classifies every item** — each piece of incoming content is classified against the CLASSIFICATION_RUBRIC:
+   - **Submission** — content that actually addresses the section's runbook requirements. Validated against the requirements; gaps are flagged.
+   - **Question** — the collaborator needs clarification before they can deliver. Surfaces to the SOW Owner.
+   - **Supporting material** — relevant context but not the deliverable itself (e.g., a reference deck). Noted, not counted as submission.
+   - **Unrelated** — noise. Ignored.
+
+4. **Updates status** — marks tasks `submitted`, `submitted_with_gaps`, `in_progress`, `overdue`, or `at_risk` based on submission state and due dates. The communication matrix determines whether a follow-up goes by Teams DM or email.
+
+5. **Drafts nudges** — for overdue or silent collaborators, the agent writes a follow-up message. It **never sends** — the nudge appears in the dashboard exceptions panel and waits for the SOW Owner to approve.
+
+6. **Publishes the dashboard** — the desktop widget shows the full picture: which sections are in, which are missing, which have gaps, what the exceptions are.
+
+### Weeks 2–3 — escalation and consolidation
+
+As the deadline approaches:
+- Tasks that remain unsubmitted transition to `overdue` → `at_risk`
+- The exceptions panel surfaces the critical path to the SOW Owner
+- Accepted submissions are assembled into the consolidated Word document via WorkIQ Word tools
+- The deliverable URL appears on the dashboard once the document is created
+
+### Context recovery after days idle
+
+Between the SOW Owner's check-ins, the agent is completely dormant — no background threads, no scheduled jobs. When woken:
+
+1. It reads `project_log.json` to know every task's current status, every submission's content ID, every cursor position (which messages have already been processed)
+2. It reads the tail of `activity.json` — the chronological audit of everything that has happened — to understand the narrative of the project
+3. It picks up exactly where it left off, without needing the SOW Owner to recap
+
+This means the agent can be left alone for a week between check-ins and still give a coherent, accurate status update the moment it's prompted. The microVM filesystem is its memory.
+
+---
+
+### What makes this a compelling Foundry use case
+
+| Capability | What it demonstrates |
+|---|---|
+| **Foundry Hosted Agent** | A containerised Python agent running as a first-class Foundry native service, not a wrapper |
+| **Microsoft Agent Framework (MAF)** | Production-grade agent runtime; any popular framework can be used — MAF here because it ships with Foundry native tooling |
+| **Foundry Toolbox (preview)** | A single MCP endpoint aggregating 8 WorkIQ M365 Intelligence services (135 tools) — Mail, Calendar, Teams, Files, Word, OneDrive, User, Copilot |
+| **OAuth Identity Passthrough** | The agent calls M365 as the signed-in user — zero server-side secrets, zero OBO plumbing in the agent code |
+| **Per-session microVM sandbox** | Every project gets an isolated persistent filesystem (`$HOME`); state survives container restarts |
+| **Autonomous agent loop** | The model's tool-loop runs the entire workflow — grounding, charter writing, fan-out, monitoring — with no step-by-step prompting |
+| **Context recovery from audit log** | After days idle, the agent reads its own activity log and project state to reconstruct exactly where it is in the workflow |
+| **Foundry SDK telemetry** | App Insights spans, OTel traces, and a structured activity audit log — all auto-wired by the hosting framework |
+
+---
+
+## Documentation map
+
+Start here, then follow the links that match your task:
+
+| Document | What it covers | Read when |
 |---|---|---|
-| [`AGENTS.md`](AGENTS.md) | **Operating contract** for every coding agent (and human) working in this repo. Non-negotiable invariants, tech choices, layout, conventions, change-safety checklist. Note: §3 invariant 3 + every "SOW-Owner OBO" / `workiq_token.py` / `COORDINATOR_OBO_*` mention is **superseded** by the identity-passthrough finding (see below). | Before every non-trivial change. |
-| [`functional-specs/project_workspace_spec.md`](functional-specs/project_workspace_spec.md) | What & why. Requirements, scenarios, channel taxonomy, status semantics, phase plan. | When changing scope or behaviour. |
-| [`architecture/architecture_and_design.md`](architecture/architecture_and_design.md) | How. Components, contracts, sequences, schemas, module seams. The top banner block flags which sections are stale relative to the May 2026 cleanup. | When implementing. |
-| [`functional-specs/references.md`](functional-specs/references.md) | External docs the design is grounded in. | When the platform behaviour surprises you. |
-| [`spike/desktop_to_foundry/README.md`](spike/desktop_to_foundry/README.md) | The throwaway spike that proved the identity-passthrough auth path end-to-end. | When wiring a new client surface or revisiting auth. |
-| [`agent/skills/sow-response/SKILL.md`](agent/skills/sow-response/SKILL.md) | The single skill the agent runs today. Drives the whole workflow. | When changing agent behaviour. |
+| **This file** | Overview, scenario, capabilities, quick start | Always |
+| [`agent/README.md`](agent/README.md) | Agent architecture, MAF + Foundry packaging, Toolbox, telemetry, session/sandbox model, local development, deployment | Building or modifying the agent |
+| [`desktop-client/README.md`](desktop-client/README.md) | Desktop app, authentication flow, cache and local storage, SSE streaming, dashboard rendering, connection status | Working on the client |
+| [`AGENTS.md`](AGENTS.md) | **Operating contract** — non-negotiable invariants, conventions, change-safety checklist | Before every non-trivial change |
+| [`architecture/architecture_and_design.md`](architecture/architecture_and_design.md) | Component diagram, state schema, Toolbox wiring, auth flow, observability, security | When implementing or extending |
+| [`functional-specs/project_workspace_spec.md`](functional-specs/project_workspace_spec.md) | Requirements, scenarios, channel taxonomy, status semantics | Changing scope or behaviour |
+| [`functional-specs/scenarios/sow-response.md`](functional-specs/scenarios/sow-response.md) | The SOW response scenario in detail | Understanding the workflow |
+| [`agent/skills/sow-response/SKILL.md`](agent/skills/sow-response/SKILL.md) | The skill body (agent instructions) — authoritative contract for all behaviour | Changing what the agent does |
 
-## Current state (May 2026)
+---
 
-- **Agent deployed and verified** on the dev Foundry project `ocvp-agent-svc`
-  (model deployment `gpt-5.4`). A calendar query through `/responses`
-  returns real Outlook data for the calling user.
-- **One skill** ships today: [`sow-response`](agent/skills/sow-response/),
-  per [`AGENTS.md` §1.5](AGENTS.md). The eight-skill split described
-  elsewhere in the contract is a possible evolution, not the current code.
-- **23 tests pass** under `agent/tests/`.
-- **Client surface**: the deployed agent is exercised end-to-end by the
-  desktop spike under [`spike/desktop_to_foundry/`](spike/desktop_to_foundry/).
+## System overview
 
-## Authentication & identity model (post-spike)
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Desktop Client (pywebview)                                              │
+│  • Signs user in via MSAL / Windows Account Manager (WAM)               │
+│  • Attaches user bearer to every /responses POST                        │
+│  • Renders SSE stream: text deltas, tool activity, dashboard widget     │
+│  • Manages per-project session_id → Foundry microVM routing             │
+└───────────────────────────┬──────────────────────────────────────────────┘
+                            │ HTTPS POST /responses
+                            │ Authorization: Bearer <user_token>
+                            │ Body: {input, stream:true, agent_session_id}
+                            ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Microsoft Foundry — Hosted Agent                                        │
+│                                                                          │
+│  ResponsesHostServer (agent-framework-foundry-hosting)                   │
+│    └─ MAF Agent (warm, one per skill)                                    │
+│         ├─ FoundryChatClient → gpt-5.x (Managed Identity)               │
+│         ├─ instructions: SKILL.md body                                   │
+│         └─ tools:                                                        │
+│              • MCPStreamableHTTPTool → Charter-Agent-Tools Toolbox       │
+│              • state_tools (read/write/append $HOME files)               │
+│                                                                          │
+│  Per-project microVM sandbox ($HOME)                                     │
+│    project_charter.md  project_log.json  activity.json                  │
+│    agent_session/<id>.json                                               │
+│                                                                          │
+│  Foundry platform                                                        │
+│    • Routes agent_session_id to the correct persistent microVM           │
+│    • Validates user bearer; exchanges into WorkIQ identity on MCP calls │
+│    • Emits oauth_consent_request SSE on first WorkIQ access per user    │
+│    • Auto-instruments: App Insights spans, OTel traces                  │
+└───────────────────────────┬──────────────────────────────────────────────┘
+                            │ MCP (Streamable HTTP)
+                            ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Charter-Agent-Tools Toolbox (Foundry-managed, preview)                  │
+│  Single MCP endpoint → 8 WorkIQ M365 Intelligence servers               │
+│  Mail · Calendar · Teams · Files · Word · OneDrive · User · Copilot     │
+│  135 tools — user identity from Foundry passthrough, not agent secrets  │
+└──────────────────────────────────────────────────────────────────────────┘
+```
 
-This is the single most important architectural decision in the codebase
-and the one most at odds with the older sections of `AGENTS.md` and
-`architecture/architecture_and_design.md`. **Read this before touching
-anything that talks to WorkIQ.**
+---
 
-### What works
+## A generic agent platform, not a one-scenario tool
 
-**OAuth Identity Passthrough at the Foundry MCP connection layer.** The
-desktop client authenticates the *end user*, attaches their bearer to
-`/responses`, and the Foundry runtime exchanges that identity into a
-WorkIQ token internally, per connection. The agent process holds no
-WorkIQ refresh tokens, signs no JWTs, and runs no OBO flow.
+The agent framework code — the HTTP server, Toolbox wiring, state I/O, skill loader, telemetry — contains **zero SOW-specific logic**. The entire SOW response workflow lives in one declarative file: [`agent/skills/sow-response/SKILL.md`](agent/skills/sow-response/SKILL.md). Swap that file and the agent runs a completely different workflow.
 
-Flow:
+This is the skills-based architecture's core promise: **adding a new scenario requires no framework code changes**. Drop a skill bundle into `agent/skills/` and it is automatically discovered, loaded, warm-started, and routed to at boot.
 
-1. Client signs the user in (MSAL public client or `az login`).
-2. Client POSTs to `/responses` with `Authorization: Bearer <user_token>`
-   (scope `https://ai.azure.com/.default`).
-3. On the first call per (user, WorkIQ connection), the response stream
-   emits an `oauth_consent_request` SSE event with a Microsoft login URL.
-   Client opens it in a browser; user consents once.
-4. Client retries with `previous_response_id` set; the agent resumes the
-   same turn, the MCP call now succeeds in the user's context, and the
-   response contains the calling user's actual M365 data.
+### What a skill consists of
 
-### What was tried and shelved
+```
+agent/skills/<skill-name>/
+├── SKILL.md        The agent's instructions for this workflow (required)
+│                   Parsed as agentskills.io-conformant YAML frontmatter + Markdown body.
+│                   The body becomes Agent.instructions at runtime.
+└── tools.py        In-process Python tools specific to this skill (optional)
+                    Registered as MAF @tool functions alongside the Toolbox tools.
+```
 
-A custom confidential-client app registration + admin-consented delegated
-scopes on the WorkIQ resource apps + server-side OBO exchange (the
-`SOW_OWNER_OBO_*` / `workiq_token.py` machinery still referenced in stale
-sections of the architecture doc). This dead-ended in microsoft.com for
-two independent reasons:
+That's it. The skill loader reads `SKILL.md`, validates the frontmatter, instantiates a warm MAF `Agent` with the skill's instructions and tools, and makes it available for routing. No changes to `foundry_host.py`, `responses_host.py`, `state.py`, or any other framework module.
 
-1. **`sansri@microsoft.com` cannot admin-consent** in the microsoft.com
-   tenant (`Forbidden / RequestDenied`). Any architecture requiring a
-   fresh admin-consent step is blocked.
-2. **The WorkIQ resource apps in the tenant are *client* apps, not
-   resource APIs** — they expose zero `oauth2PermissionScopes` and have
-   no `api://` SPN. Even with admin rights there is nothing to request
-   delegated permissions against.
+### Skills that could be added with no framework changes
 
-The dead modules (`runtime/workiq_token.py`,
-`runtime/workiq_token_cache.py`, `scripts/bootstrap_workiq_token.py`,
-`scripts/setup_obo_app_reg.ps1`) and their env vars
-(`SOW_OWNER_OBO_TENANT_ID/CLIENT_ID/CLIENT_SECRET`, `WORKIQ_SCOPE`) were
-removed in the May 22 cleanup.
+The SOW response workflow is one point in a large space of M365-native coordination scenarios. All of the following would be new `SKILL.md` files:
 
-### Client surface
+| Scenario | What the skill would do |
+|---|---|
+| **Project onboarding** | Greet a new employee, set up their M365 access, schedule intro meetings, share relevant SharePoint sites, track completion |
+| **Contract review** | Pull a contract from SharePoint, fan out sections to legal/commercial/technical reviewers, consolidate markup into a final document |
+| **Incident response** | On an alert, create a Teams channel, page the on-call, monitor the channel for resolution signals, draft a post-mortem |
+| **Recruitment pipeline** | Track candidates through interview stages, coordinate panel schedules via Calendar, collect and classify feedback from interviewers |
+| **Budget approval** | Route budget requests to approvers, monitor email/Teams for decisions, escalate overdue approvals, produce a summary report |
+| **Customer onboarding** | Create SharePoint project site, assign tasks to the delivery team via Planner/Tasks, monitor completion, send milestone reports to the customer |
 
-The only client is the desktop spike under [`spike/desktop_to_foundry/`](spike/desktop_to_foundry/). It signs the user in via the Azure CLI public client (or any pre-consented public client) and POSTs the user bearer to `/responses`. The agent code itself does not care what kind of client is in front of it — anything that can attach a user bearer to an HTTPS POST and stream SSE works.
+Each of these spans days or weeks, involves multiple people, and spans multiple M365 channels — exactly the class of workflow the Foundry Toolbox + MAF agent loop is designed for. None would require modifying the framework code.
+
+### The routing mechanism
+
+The `general` skill (the default) handles ambiguous or unrecognised prompts. When the model determines the user's intent matches a known skill, it calls `route_to_skill("sow-response")`. The client detects this routing event and automatically re-sends with the target skill, so the transition is invisible to the user — they see one seamless flow, not a "select a skill" step.
+
+Skill routing is declared in the `description` frontmatter of each `SKILL.md` — plain English describing the trigger phrases. No code changes when a new skill is added; the general skill's routing logic reads descriptions at runtime.
+
+---
+
+## Quick start
+
+**Run the agent locally** (still uses cloud Foundry model + Toolbox):
+```powershell
+cd agent
+.\.venv\Scripts\Activate.ps1
+python -m charter_agent
+# → http://localhost:8088/responses
+```
+
+**Run the desktop client:**
+```powershell
+cd desktop-client
+.\.venv\Scripts\Activate.ps1
+$env:AGENT_ENDPOINT_HOSTED = "https://<your-deployed-agent>/responses"
+python app.py
+```
+
+Full setup, deployment, and testing instructions:
+- Agent: [`agent/README.md`](agent/README.md)
+- Desktop client: [`desktop-client/README.md`](desktop-client/README.md)
+
+---
 
 ## Repository layout
 
-See [`AGENTS.md` §5](AGENTS.md#5-repository-layout-target). Briefly:
-
-- [`agent/`](agent/) — the hosted agent (Python 3.13, MAF + Foundry).
-- [`functional-specs/`](functional-specs/) — requirements.
-- [`architecture/`](architecture/) — design.
-- [`spike/`](spike/) — throwaway proofs (currently: desktop → Foundry
-  passthrough; the desktop spike is also the sample's only client).
-- [`test-fixtures/`](test-fixtures/) — one sample project for end-to-end
-  runs; **not** a normative scenario.
-
-## Running, deploying, and testing
-
-There are three workflows. The deployed agent on Foundry is the source of
-truth — local boots are for de-risking import-time, MCP wiring, and skill
-loading before pushing an image.
-
-### 1. Local development
-
-Boots the agent in this repo against the **real** Foundry project, using
-your `az login` identity in place of the production Managed Identity. The
-host model and the WorkIQ Toolbox are remote; only the Python process is
-local. Note: the Foundry **MCP Identity Passthrough only engages when the
-agent runs inside Foundry hosting** — locally, every WorkIQ call runs as
-the developer's `az login` identity. Local boots are therefore for plumbing
-work (skill loading, Toolbox enumeration, prompt iteration), not for
-validating per-user identity propagation.
-
-```pwsh
-# one-time, from repo root
-cd agent
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e .
-
-# auth + config
-az login --tenant <your-tenant>
-Copy-Item .env.example .env   # edit if you need to repoint deployment/project
+```
+charter-agent/
+├── agent/                    Python agent (MAF + Foundry hosting)
+│   ├── src/charter_agent/    Agent package
+│   │   ├── __main__.py       Boot entry
+│   │   ├── state.py          Atomic $HOME I/O
+│   │   ├── observability.py  OTel + activity log
+│   │   └── runtime/          foundry_host, responses_host, skill_loader, state_tools, project_router
+│   ├── skills/               Skill bundles (SKILL.md + tools.py)
+│   │   ├── sow-response/     The SOW response workflow skill
+│   │   └── general/          Default routing skill
+│   ├── tests/                23 pure-Python tests (no network)
+│   └── pyproject.toml
+├── desktop-client/           pywebview rich client
+│   ├── app.py                Auth, SSE streaming, Bridge (Python ↔ JS)
+│   └── ui.html               Single-file UI (CSS + HTML + JS)
+├── architecture/             Design documents and diagrams
+├── functional-specs/         Requirements, scenarios, references
+├── test-fixtures/            Sample RFP and meeting notes
+├── AGENTS.md                 Operating contract
+└── README.md                 This file
 ```
 
-Then either run a focused command or boot the full Responses server.
+---
 
-**Focused probes** (no HTTP server, fast feedback):
+## Current status (May 2026)
 
-```pwsh
-python scripts/dev_run.py skills        # what skill_loader picks up
-python scripts/dev_run.py list-tools    # what the Toolbox enumerates
-python scripts/smoke_calendar.py        # one calendar query end-to-end via the host model + Toolbox
-```
-
-**Full Responses server** (mirrors what Foundry runs in production):
-
-```pwsh
-# terminal A
-python -m charter_agent
-# -> listens on http://localhost:8088/responses
-
-# terminal B
-python scripts/smoke_responses.py "list your skills"
-python scripts/smoke_responses.py "..." --previous-response-id <id-from-prior-response>
-```
-
-**Tests**:
-
-```pwsh
-python -m pytest -q     # 23 tests, all pure-Python (no network)
-```
-
-### 2. Deploy to Foundry hosted agents
-
-Two-step: build & push the image to ACR, then register a new agent
-version against the Foundry project. The deploy doesn't run `docker
-build` for you — `azd deploy` or a manual ACR build does.
-
-**Build & push** (the image tag in `agent/scripts/deploy.py` defaults to
-`pcdotaiagentd10b5a.azurecr.io/charter-agent:v1` — override
-`AGENT_IMAGE` to bump):
-
-```pwsh
-# from repo root; ACR remote build (handles linux/amd64 even on ARM)
-az acr build `
-  --registry pcdotaiagentd10b5a `
-  --image charter-agent:v2 `
-  --file agent/Dockerfile `
-  agent/
-```
-
-> Foundry hosted agents reject non-`linux/amd64` images. On Apple Silicon
-> or Windows ARM, always use `az acr build` (remote) or
-> `docker buildx build --platform=linux/amd64 …`.
-
-**Register the new version**:
-
-```pwsh
-cd agent
-$env:AGENT_IMAGE = "pcdotaiagentd10b5a.azurecr.io/charter-agent:v2"
-python scripts/deploy.py
-```
-
-`deploy.py` calls `project.agents.create_version(...)` with a
-`HostedAgentDefinition` (CPU 0.5, memory 1Gi, Responses protocol 1.0.0,
-env vars from `AZURE_AI_MODEL_DEPLOYMENT_NAME` + `TOOLBOX_NAME`), polls
-until `status=active` (~1–3 min), and prints the gated Responses URL of
-the form:
-
-```
-https://<project>.services.ai.azure.com/api/projects/<project>/agents/charter-agent/endpoint/protocols/openai/responses?api-version=v1
-```
-
-The Foundry-injected env on the running container additionally includes
-`FOUNDRY_PROJECT_ENDPOINT` and `APPLICATIONINSIGHTS_CONNECTION_STRING` —
-do not set those in `agent.yaml` or via `deploy.py`.
-
-### 3. Testing the deployed agent end-to-end
-
-Two complementary surfaces:
-
-**A. Calendar-on-behalf-of-user spike** ([`spike/desktop_to_foundry/`](spike/desktop_to_foundry/))
-— the proven path for validating that the WorkIQ call returns the
-calling user's data and not the agent's MI. This is the only place where
-the `oauth_consent_request` → consent-in-browser →
-`previous_response_id`-resume cycle is exercised end-to-end.
-
-```pwsh
-cd spike/desktop_to_foundry
-pip install msal httpx
-$env:AGENT_RESPONSES_URL = "<gated Responses URL from deploy.py output>"
-python calendar_today.py
-```
-
-First run pauses with a consent URL; subsequent runs against the same
-user complete in one shot.
-
-**B. Application Insights traces** — see the **Telemetry** section below.
-
-## Telemetry
-
-### What is emitted, by whom
-
-| Source | Spans/events | Wired by |
-|---|---|---|
-| Foundry hosted-agent platform | Root `/responses` request span; child spans for each model call and each MCP `tools/list` / `tools/call`; GenAI semantic-conventions attributes (`gen_ai.system`, `gen_ai.request.model`, token counts) | Auto, once App Insights is connected to the Foundry project. No code in this repo wires it. |
-| MAF + the Responses host server | Tool-dispatch internals, SSE event emission, structured logs | Auto. We hand the warm `Agent` to `ResponsesHostServer(agent).run()` and the rest is library-side. |
-| This repo — `observability.ProcessAttributesSpanProcessor` | Stamps every span with `project.id` and `gen_ai.conversation.id` from `FOUNDRY_AGENT_SESSION_ID` so multi-project queries can filter cleanly | `_enable_tracing()` in [`__main__.py`](agent/src/charter_agent/__main__.py), once per process. |
-| This repo — `@trace_function` decorator (re-exported from `azure.ai.projects.telemetry`) | Custom child spans wherever the agent code wraps a non-trivial operation | Decorator on the function. No `tracer.start_as_current_span(...)` by hand. |
-| This repo — `observability.log_activity(...)` | Append-only NDJSON to `$HOME/activity.json`; each entry includes the current OTel `span_id` so audit lines correlate with traces | Explicit call wherever state mutates. This is **product behaviour** (the audit narrative the dashboard renders), not telemetry. |
-
-The OTel exporter (Azure Monitor) is wired by the platform via the
-auto-injected `APPLICATIONINSIGHTS_CONNECTION_STRING`. We do **not**
-call `configure_azure_monitor(...)` ourselves, and we do **not** create
-or own a `TracerProvider`.
-
-### What we deliberately do NOT do
-
-**`AIProjectInstrumentor().instrument()` is intentionally not called.**
-The docstring for `_enable_tracing()` in [`__main__.py`](agent/src/charter_agent/__main__.py)
-records why: `azure-ai-projects` 2.0.1 / 2.1.0 ships a Responses
-instrumentor that wraps the upstream stream in an `AsyncStreamWrapper`
-which lacks the `.headers` attribute that
-`agent_framework_foundry`'s streaming consumer reads. Enabling it
-crashes every Responses turn with
-`'AsyncStreamWrapper' object has no attribute 'headers'`. Re-enable
-once that upstream bug is fixed. As long as it's off, the
-`AZURE_EXPERIMENTAL_ENABLE_GENAI_TRACING` env var is also a no-op for
-us — leave it unset.
-
-### Azure resources
-
-| Resource | Name | RG | Purpose |
-|---|---|---|---|
-| App Insights | `app-insights-uc3lfx4p7wxjy` | `sre-rg` | Sink for all spans, traces, exceptions, and dependencies emitted by the agent container. Connection string auto-injected into the agent process by the Foundry platform — not set in `agent.yaml` or `deploy.py`. |
-| Foundry project | `ocvp-agent-svc` | `pcdotai-agent` | Hosts the agent; owns the connection to App Insights above. |
-
-The Foundry-to-App-Insights connection is configured once per project
-in the portal (Foundry project → Tracing → Connect to Application
-Insights). The agent picks it up on next deploy via the injected env.
-
-### Querying
-
-The KQL pattern that has been most useful for end-to-end debugging:
-
-```pwsh
-$env:PYTHONIOENCODING = "utf-8"
-az monitor app-insights query `
-  --app app-insights-uc3lfx4p7wxjy -g sre-rg `
-  --analytics-query "union traces, exceptions, requests, dependencies
-    | where timestamp > ago(15m)
-    | where cloud_RoleName has 'charter-agent'
-    | order by timestamp desc | take 80
-    | project timestamp, itemType, severityLevel, message,
-              outerMessage = tostring(customDimensions['outerMessage']),
-              operation_Name, resultCode, success" `
-  --subscription bc2e2415-164d-45a5-9a4a-29d9264a343e -o table
-```
-
-The `union` is deliberate — Foundry's spans land as `requests` and
-`dependencies`, MAF and library logs land as `traces`, and any unhandled
-errors land as `exceptions`. Filtering by `cloud_RoleName has 'charter-agent'`
-isolates this agent from anything else in the same App Insights workspace.
-
-For trace-local debugging, pivot off `operation_Id` (the trace ID) once
-you have one row from the union above:
-
-```kusto
-union traces, requests, dependencies, exceptions
-| where operation_Id == "<trace-id>"
-| order by timestamp asc
-```
+- Agent deployed and verified on Foundry project `ocvp-agent-svc` (model `gpt-5.4`)
+- Two skills ship: `sow-response` (full workflow) and `general` (routing / default)
+- 23 tests pass — pure Python, no network required
+- Desktop client: pywebview app, multi-project sidebar, SSE streaming, dashboard widget
+- End-to-end verified: calendar query, kickoff fan-out (Teams DMs + email), submission capture

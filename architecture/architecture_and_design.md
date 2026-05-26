@@ -4,7 +4,9 @@
 >
 > Read [`../AGENTS.md`](../AGENTS.md) first for the non-negotiable invariants this design has been shaped around. The contract there is authoritative; this document elaborates it.
 
-**Status**: draft v0.4 (May 22, 2026). Reflects the working MVP described in [`../AGENTS.md` §1.5](../AGENTS.md#15-current-implementation-status-may-21-2026): single MAF `Agent` runtime on Foundry, single `sow-response` skill, Responses-protocol surface, OAuth Identity Passthrough at the Foundry MCP connection layer (no agent-side OBO).
+**Status**: v0.5 (May 26, 2026). Two skills ship (`sow-response` and `general`); multi-project sidebar; per-project Foundry session model; client-side view cache and transcript persistence. For narrative explanations of the agent backend and the desktop client, see [`../agent/README.md`](../agent/README.md) and [`../desktop-client/README.md`](../desktop-client/README.md) respectively — this document covers the implementation contracts.
+
+**Navigation:** [Root README](../README.md) · [Agent README](../agent/README.md) · [Desktop client README](../desktop-client/README.md) · [AGENTS.md](../AGENTS.md)
 
 ---
 
@@ -25,50 +27,64 @@
 ## 2. Component diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Tenant boundary                                 │
-│                                                                              │
-│  Desktop client                                                              │
-│  ──────────────────                                                              │
-│  • Signs the end user in (MSAL public client / az login).                    │
-│  • POSTs to /responses with Authorization: Bearer <user_token>.              │
-│  • Handles oauth_consent_request SSE event (opens URL, retries with          │
-│    previous_response_id).                                                    │
-│                                                                              │
-│            │                                                                 │
-│            ▼                                                                 │
-│  ┌─────────────────────────────────────────────────────────────────────────┐ │
-│  │ Foundry hosted agent                                                    │ │
-│  │                                                                         │ │
-│  │   ResponsesHostServer (agent-framework-foundry-hosting)                 │ │
-│  │     └─ MAF Agent (warm, one per process)                                │ │
-│  │          ├─ FoundryChatClient → gpt-5.x deployment (Managed Identity)   │ │
-│  │          ├─ instructions: sow-response/SKILL.md body                    │ │
-│  │          ├─ tools:                                                      │ │
-│  │          │    • MCPStreamableHTTPTool → Charter-Agent-Tools Toolbox     │ │
-│  │          │    • state_tools (read/write/append to $HOME)                │ │
-│  │          └─ default_options.store = False  (host owns history)          │ │
-│  │                                                                         │ │
-│  │   Foundry runtime (platform)                                            │ │
-│  │     • Validates the incoming user bearer.                               │ │
-│  │     • On MCP calls into Toolbox connections marked "Identity            │ │
-│  │       Passthrough", exchanges the user identity into the per-           │ │
-│  │       connection token; emits oauth_consent_request when needed.        │ │
-│  │                                                                         │ │
-│  │   $HOME (per-session microVM)                                           │ │
-│  │     • project_charter.md       (Markdown, ratified at kickoff)          │ │
-│  │     • project_log.json         (tasks, submissions, cursors, status)    │ │
-│  │     • activity.json            (append-only NDJSON audit log)           │ │
-│  │     • agent_session/<id>.json  (MAF thread persistence)                 │ │
-│  └─────────────────────────────────────────────────────────────────────────┘ │
-│            │                                                                 │
-│            ▼                                                                 │
-│  Charter-Agent-Tools Toolbox (Foundry-managed)                               │
-│    8 WorkIQ MCP servers — Mail, Calendar, Files, Teams, Word, OneDrive,      │
-│    User, Copilot — surfaced as a single MCP endpoint.                        │
-│                                                                              │
-│  App Insights / OpenTelemetry — auto-wired by the hosting framework.         │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│  Tenant boundary                                                               │
+│                                                                                │
+│  Desktop client (pywebview)                                                    │
+│    • MSAL / WAM sign-in → bearer token (scope: https://ai.azure.com/.default) │
+│    • Multi-project sidebar: each project stores its own agent_session_id       │
+│    • Sends [charter-agent-context: project_id=p-xxx skill=sow-response]        │
+│      preamble on every prompt                                                  │
+│    • Handles oauth_consent_request SSE (opens browser, retries w/ prev_id)    │
+│    • Caches dashboard + activity in view_cache.json for hosted mode            │
+│                                                                                │
+│              │  POST /responses                                                │
+│              │  Authorization: Bearer <user_token>                             │
+│              │  Body: {input, stream:true, agent_session_id, prev_response_id} │
+│              ▼                                                                 │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │  Foundry hosted agent                                                    │  │
+│  │                                                                          │  │
+│  │  _ResilientResponsesHostServer                                           │  │
+│  │    • Parses [charter-agent-context:] preamble → sets active project     │  │
+│  │    • Routes to warm Agent for resolved skill                             │  │
+│  │                                                                          │  │
+│  │  MAF Agent per skill (warm, built at boot)                               │  │
+│  │    ├─ FoundryChatClient → gpt-5.x (Managed Identity)                    │  │
+│  │    ├─ instructions: SKILL.md body                                        │  │
+│  │    └─ tools:                                                             │  │
+│  │         • MCPStreamableHTTPTool → Charter-Agent-Tools Toolbox            │  │
+│  │         • skill in-process tools (dashboard_payload, record_submission…) │  │
+│  │         • state_tools (read/write/append $HOME)                          │  │
+│  │                                                                          │  │
+│  │  Foundry runtime (platform)                                              │  │
+│  │    • Routes agent_session_id → persistent microVM                       │  │
+│  │    • Validates user bearer                                               │  │
+│  │    • On Toolbox MCP call: substitutes user identity (Identity            │  │
+│  │      Passthrough); emits oauth_consent_request on first access           │  │
+│  │    • Auto-instruments: App Insights spans, OTel traces                  │  │
+│  │                                                                          │  │
+│  │  Per-project microVM $HOME                                               │  │
+│  │    .active_project              (current project_id pointer)             │  │
+│  │    projects/<pid>/                                                       │  │
+│  │      project_charter.md        (ratified at kickoff, immutable)          │  │
+│  │      project_log.json          (tasks, submissions, cursors, status)     │  │
+│  │      activity.json             (append-only NDJSON audit trail)          │  │
+│  │    agent_session/<id>.json     (MAF thread persistence)                  │  │
+│  └──────────────────────────────────────────────────────────────────────────┘  │
+│              │  MCP (Streamable HTTP)                                          │
+│              │  Authorization: Bearer <agent_MI_token>                         │
+│              │  Foundry-Features: Toolboxes=V1Preview                          │
+│              ▼                                                                 │
+│  Charter-Agent-Tools Toolbox (Foundry-managed, preview)                        │
+│    Single MCP endpoint → 8 WorkIQ M365 Intelligence servers (135 tools)        │
+│    Mail · Calendar · Teams · Files · Word · OneDrive · User · Copilot          │
+│    User identity: from Foundry passthrough (not agent credentials)              │
+│                                                                                │
+│  App Insights / OpenTelemetry                                                  │
+│    Auto-wired by ResponsesHostServer. ProcessAttributesSpanProcessor stamps    │
+│    project.id on every span. activity.json is the product-level audit trail.   │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 The only public surface is `/responses` on the hosted agent. Everything else is private to the tenant.
@@ -201,7 +217,9 @@ The dead modules and env vars (`runtime/workiq_token.py`, `runtime/workiq_token_
 
 ### 7.3 Client surface
 
-The client surface is the **desktop client** under [`../spike/desktop_to_foundry/`](../spike/desktop_to_foundry/). It signs the user in via the Azure CLI public client (or any pre-consented public client) and POSTs the user bearer to `/responses`. The spike's `calendar_today.py` is proven end-to-end — it returns the calling user's actual Outlook calendar through the WorkIQ Calendar MCP.
+The client surface is the **desktop client** under [`../desktop-client/`](../desktop-client/). It signs the user in via Windows Account Manager (WAM) or the system browser, caches the `AuthenticationRecord` for silent re-auth on subsequent launches, and POSTs the user bearer to `/responses`. See [`../desktop-client/README.md §3`](../desktop-client/README.md#3-authentication) for the full auth flow.
+
+The earlier spike under [`../spike/desktop_to_foundry/`](../spike/desktop_to_foundry/) is retained as a minimal proof of the identity-passthrough pattern. The production client is `desktop-client/`.
 
 ---
 
@@ -254,7 +272,7 @@ Runtime: `agent-framework-core`, `agent-framework-foundry`, `agent-framework-fou
 
 Dev/CI: `pytest`, `pytest-asyncio`, `respx`, `freezegun`. `import-linter`, `ruff`, `pyright` are aspirational — not yet wired in CI.
 
-Desktop client (spike, [`../spike/desktop_to_foundry/`](../spike/desktop_to_foundry/)): `msal`, `httpx`.
+Desktop client ([`../desktop-client/`](../desktop-client/)): `pywebview`, `httpx`, `azure-identity`, `azure-identity-broker` (optional, enables WAM). See `desktop-client/requirements.txt`.
 
 ---
 

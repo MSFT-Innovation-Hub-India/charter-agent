@@ -1,89 +1,407 @@
-# Project Charter Desktop Agent
+# Charter Agent — Desktop Client
 
-A standalone pywebview rich client for the `charter-agent`. Has its own venv so you can iterate on the client independently of the agent.
+A native Windows desktop application that provides the user-facing surface for the Charter Agent. Built with pywebview (Chromium-based WebView2 host), it authenticates the user, streams agent responses in real time, manages multiple concurrent projects, and renders a live project dashboard.
 
-## Layout
+> **Navigation:** [Root README](../README.md) · [Agent backend](../agent/README.md) · [Architecture](../architecture/architecture_and_design.md)
+
+---
+
+## Contents
+
+1. [What it is](#1-what-it-is)
+2. [Setup and run](#2-setup-and-run)
+3. [Authentication](#3-authentication)
+4. [Calling the agent: local vs hosted](#4-calling-the-agent-local-vs-hosted)
+5. [Project management and the sidebar](#5-project-management-and-the-sidebar)
+6. [Local storage and cache](#6-local-storage-and-cache)
+7. [SSE streaming and the agent event model](#7-sse-streaming-and-the-agent-event-model)
+8. [Dashboard rendering](#8-dashboard-rendering)
+9. [Connection and service status](#9-connection-and-service-status)
+10. [The autonomous agent trigger](#10-the-autonomous-agent-trigger)
+11. [Architecture: Bridge pattern](#11-architecture-bridge-pattern)
+
+---
+
+## 1. What it is
 
 ```
 desktop-client/
-├── app.py            Python entry: auth, SSE streaming, JS bridge
-├── ui.html           Single-file UI (dashboard widget + chat + input)
-├── requirements.txt  pywebview, httpx, azure-identity
-└── README.md
+├── app.py          Python process: auth, SSE streaming, Bridge (Python ↔ JS)
+├── ui.html         Single-file UI: CSS design system, HTML, JavaScript SPA
+├── assets/
+│   ├── app_icon.png
+│   └── app_icon.ico
+└── requirements.txt
 ```
 
-## What's in the window
+The application runs as a pywebview window — a native Win32 window hosting a Chromium WebView2 pane. The Python process (`app.py`) handles all networking and authentication; the JavaScript in `ui.html` handles all rendering. They communicate over the pywebview `js_api` bridge: JavaScript calls Python methods directly, and Python pushes events to JavaScript via `window.evaluate_js()`.
 
-- **Header** — app title, current `agent_session_id`, current endpoint, auth pill, *Run against* dropdown (Hosted / Local), *Sign in*, *New project*.
-- **Dashboard widget** at the top — empty placeholder until the agent emits a ```` ```json {"kind":"dashboard", …} ``` ```` snapshot, then renders project name, status pill, progress bar, owner tiles, exceptions panel. (The *Refresh status* quick-action prompts the agent for exactly that shape.)
-- **Quick actions** — *Kickoff SOW (Northwind)*, *Refresh status*, *Check submissions*, *Show charter*. Same surface a future direct-action button bar can sit on.
-- **Transcript** — user / agent / tool / system / error bubbles with live SSE streaming, scrollable, persists for the window's lifetime.
-- **Input bar** — textarea + Send. Enter sends; Shift+Enter inserts a newline.
+---
 
-## Endpoints
+## 2. Setup and run
 
-The client speaks the OpenAI Responses protocol against one of two endpoints, switchable at runtime via the dropdown in the header:
+### Prerequisites
 
-| Mode     | Default URL                            | When to use                                                                      |
-|----------|----------------------------------------|----------------------------------------------------------------------------------|
-| `local`  | `http://localhost:8088/responses`      | A locally-running charter-agent.                                                 |
-| `hosted` | from `AGENT_ENDPOINT_HOSTED`           | The deployed Foundry-hosted agent.                                               |
+- Windows 10/11, Python 3.12+
+- WebView2 runtime (pre-installed on Windows 11; download from Microsoft for Windows 10)
+- Active `az login` session (or use the in-app Sign in button for WAM-based auth)
+- The Foundry hosted agent endpoint URL (from the Foundry portal)
 
-Set whichever endpoints you'll use; the dropdown disables unconfigured modes. Switching modes drops the current session id so the next message lands in the right sandbox.
-
-## Setup
+### Setup (one-time)
 
 ```powershell
-cd c:\Users\sansri\WorkIQ-Sample-Agents\charter-agent\desktop-client
-
-# isolated venv (so the agent and the client can drift independently)
+cd desktop-client
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-## Run
+### Run
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 
-# pick one or both
-$env:AGENT_ENDPOINT_LOCAL  = "http://localhost:8088/responses"
-$env:AGENT_ENDPOINT_HOSTED = "https://<your-deployed-agent>/responses"
+# Configure endpoints (at least one required)
+$env:AGENT_ENDPOINT_LOCAL  = "http://localhost:8088/responses"   # local agent
+$env:AGENT_ENDPOINT_HOSTED = "https://<your-deployed-agent>/responses"  # Foundry
 
-# (optional) initial mode; default is hosted, falls back to local if hosted unset
-$env:AGENT_ENDPOINT_MODE = "hosted"   # or "local"
+# Optional: start in local mode (default is hosted, falls back to local if unset)
+$env:AGENT_ENDPOINT_MODE = "local"
 
-# (optional) bind to an existing sandbox so the first turn lands in that $HOME
-# $env:AGENT_PROJECT_ID = "<agent-session-id>"
-
-az login
 python app.py
 ```
 
-CLI flags override env vars:
+### CLI flags
 
 ```powershell
-python app.py --mode local --local-url http://localhost:8088/responses
-python app.py --mode hosted --hosted-url https://<deployed-agent>/responses
+python app.py --mode local
+python app.py --mode hosted --hosted-url https://<agent>/responses
+python app.py --debug        # opens WebView2 DevTools (right-click → Inspect)
 ```
 
-## Testing the agent separately
+---
 
-In another terminal, boot the local agent (its own venv lives at `..\agent\.venv`):
+## 3. Authentication
 
-```powershell
-cd c:\Users\sansri\WorkIQ-Sample-Agents\charter-agent\agent
-.\.venv\Scripts\Activate.ps1
-# whatever your local-run entrypoint is — e.g. dev_run.py, or directly:
-python -m charter_agent
+### How the user signs in
+
+The client uses **Azure Identity** (`azure-identity` + optional `azure-identity-broker`) to authenticate the user and obtain a bearer token with scope `https://ai.azure.com/.default`.
+
+Authentication falls through a priority chain:
+
+1. **Windows Account Manager (WAM) broker** — if `azure-identity-broker` is installed, the Windows native account picker appears. Silent for accounts already signed in to Windows.
+2. **Interactive browser** — fallback when the broker is unavailable. Opens the system browser for sign-in.
+3. **Silent refresh** — if a previous session's `AuthenticationRecord` is saved to disk, the app attempts a silent token refresh at startup. The user sees "signed in" immediately without a popup.
+
+### Token persistence
+
+After the first successful interactive sign-in, the client saves an **`AuthenticationRecord`** to `%LOCALAPPDATA%\charter-agent\auth_record.json`. This record contains enough information to silently re-acquire tokens on subsequent launches — no password re-entry, no browser pop-up, unless the refresh token expires.
+
+The MSAL token cache itself is encrypted on disk via Windows DPAPI (through `azure-identity`'s `TokenCachePersistenceOptions`).
+
+### What the token is used for
+
+The bearer token is attached to **every `/responses` POST** as `Authorization: Bearer <token>`:
+
+```python
+headers = {
+    "Authorization": f"Bearer {self.token}",
+    "Content-Type": "application/json",
+    "Accept": "text/event-stream",
+}
 ```
 
-Then in the client window pick **Local agent** from the dropdown. Flip to **Hosted (Foundry)** any time to compare behaviour against the deployed agent — switching drops the session id so each side starts from a clean sandbox.
+The Foundry platform uses this token to:
+1. **Validate the user identity** — confirm the caller is an authenticated tenant member
+2. **Propagate the user's identity into WorkIQ tool calls** via OAuth Identity Passthrough (see [agent/README.md §7](../agent/README.md#7-foundry-toolbox--one-mcp-endpoint-for-all-of-m365))
 
-## Heads up
+The token is **refreshed automatically** before it expires. If `time.time() >= token_expires_at - 60`, a refresh is triggered at the start of every `send()` call, before the request is made.
 
-- **Kickoff is destructive.** *Kickoff SOW (Northwind)* triggers the §6 fan-out in `..\agent\skills\sow-response\SKILL.md` — real Teams DMs to internal collaborators and real emails to external addresses from the bundled fixture. Only click against a tenant where those side effects are OK.
-- **Mock-data note.** The bundled scenario assumes the kick-off meeting *notes* arrive as an email (no actual Teams meeting took place). The skill is updated to accept any of: meeting transcript, email body/attachment, Teams chat thread, or linked SharePoint/OneDrive doc — whichever WorkIQ Copilot surfaces.
-- **Consent flow.** First-time access to a WorkIQ connection emits `oauth_consent_required`; the client opens the consent URL in a browser, waits ~8 seconds, and retries with `previous_response_id`. If consent takes longer, re-send the same prompt.
-- **Dashboard JSON contract.** The widget renders the first ```` ```json {"kind":"dashboard", …} ``` ```` block in the agent's reply. A future iteration can lift this to a typed MAF tool return value.
+### WorkIQ consent flow
+
+On the first request that triggers a WorkIQ tool call, the Foundry platform emits an `oauth_consent_request` SSE event rather than the tool result. The client:
+
+1. Detects the event and extracts the consent URL
+2. Displays a system message in the transcript: "Opening consent URL — grant access in the browser that just opened"
+3. Opens the URL in the default system browser via `webbrowser.open()`
+4. Waits ~8 seconds (enough for most users to grant consent)
+5. Retries the same prompt with `previous_response_id` set to the paused response's ID
+
+After consent is granted once, all subsequent WorkIQ calls for that user and that connection succeed silently.
+
+---
+
+## 4. Calling the agent: local vs hosted
+
+The client speaks the same **OpenAI Responses protocol** regardless of which endpoint it targets. Switching modes is purely a URL change.
+
+| Mode | Default URL | Agent location |
+|---|---|---|
+| `local` | `http://localhost:8088/responses` | Python process on this machine |
+| `hosted` | from `AGENT_ENDPOINT_HOSTED` env var | Deployed Foundry native agent |
+
+### What differs between modes
+
+| Concern | Local mode | Hosted mode |
+|---|---|---|
+| Model | Remote — Foundry cloud (`gpt-5.x`) | Remote — same deployment |
+| Toolbox / WorkIQ | Remote — Foundry cloud Toolbox | Remote — same Toolbox |
+| `$HOME` sandbox | `agent/.charter-agent-home/` on this machine | Foundry microVM per project |
+| Auth | `az login` identity | User's bearer token via WAM/browser |
+| Project isolation | Subfolders under one shared `$HOME` | Separate microVMs per project |
+| State persistence | Persists on disk across restarts | Persists in microVM (up to 30-day idle) |
+
+**Important**: Even in local mode, every model call and every WorkIQ tool call goes to the cloud. Local mode is for iterating on agent behaviour with real endpoints — not for offline testing.
+
+### Switching modes at runtime
+
+The header dropdown lets you switch between Local and Hosted during the session. On switch, the client:
+- Clears `session_id` and `previous_response_id` (they're endpoint-specific)
+- Clears the transcript and activity panel
+- Reloads the project list for the new mode (local and hosted projects are tracked separately)
+
+---
+
+## 5. Project management and the sidebar
+
+### Each project is a separate Foundry session
+
+Every project in the left sidebar corresponds to one entry in the client's `projects.json` store, and — in hosted mode — to one dedicated **Foundry session microVM**.
+
+When the client creates a new project:
+1. A `project_id` is generated client-side (e.g., `p-9bd98bc8`)
+2. The project is saved to `projects.json` with `session_id: null`
+3. On the first message, the POST goes to `/responses` with no `agent_session_id`
+4. The Foundry platform creates a new microVM and returns an `agent_session_id` in the `response.created` SSE event
+5. The client stores this `session_id` against the project in `projects.json`
+6. All subsequent messages for this project include `agent_session_id: <stored_session_id>`, routing to the same microVM
+
+**Switching projects** swaps the active `session_id`. The next POST goes to the microVM for the new project — a completely separate filesystem with separate state.
+
+```
+Sidebar project "Northwind SOW"   →  agent_session_id: ses-abc  →  microVM-1  →  $HOME-A
+Sidebar project "Fabrikam SOW"    →  agent_session_id: ses-def  →  microVM-2  →  $HOME-B
+```
+
+### Idle session handling
+
+Foundry's in-memory transcript store evicts `previous_response_id` after ~15 minutes of idle. The client detects this: if a response comes back with no text and ≤4 SSE events (meaning the model had no context), it automatically retries the same prompt without `previous_response_id`, keeping the `agent_session_id`. This ensures the microVM `$HOME` (which persists much longer) is still reached even if the in-memory transcript rolled.
+
+Additionally, before any send that has been idle for more than 12 minutes, the client pre-emptively clears `previous_response_id` (while keeping `agent_session_id`) to avoid the empty-response scenario.
+
+---
+
+## 6. Local storage and cache
+
+All client-side state is stored in `%LOCALAPPDATA%\charter-agent\` (Windows) or `~/.local/share/charter-agent/` (other platforms).
+
+### `projects.json` — the project registry
+
+Persists the full project list across app restarts, keyed by mode:
+
+```json
+{
+  "active": { "local": "p-9bd98bc8", "hosted": "p-72fabf49" },
+  "projects": {
+    "hosted": {
+      "p-72fabf49": {
+        "label": "Northwind SOW",
+        "created_at": "2026-05-20T09:00:00+00:00",
+        "last_used_at": "2026-05-25T14:30:00+00:00",
+        "session_id": "ses-abc123",
+        "previous_response_id": "resp-xyz456",
+        "skill": "sow-response",
+        "customer_name": "Northwind",
+        "is_new": false
+      }
+    },
+    "local": { ... }
+  }
+}
+```
+
+`session_id` and `previous_response_id` are restored on app launch so the next message resumes the correct Foundry session.
+
+### `view_cache.json` — dashboard and activity cache
+
+In hosted mode, the agent's `$HOME` lives in a Foundry microVM that the client cannot read directly (no filesystem access across machines). The client caches the most recent dashboard and activity data after each turn so the UI can restore them on restart:
+
+```json
+{
+  "hosted/p-72fabf49": {
+    "dashboard": { "kind": "dashboard", "project": "Northwind SOW", ... },
+    "activity": [ { "at": "...", "actor": "agent", "kind": "kickoff.sent", ... } ],
+    "saved_at": "2026-05-25T14:30:00+00:00"
+  }
+}
+```
+
+On project switch or app restart, the cached dashboard and activity are rendered immediately — the user sees the last-known state without needing a new agent turn. The cache is refreshed on every `turn.complete` event.
+
+In local mode, the client reads `activity.json` and `project_log.json` directly from the agent's `$HOME` subfolder on disk, so the cache is less critical but still written for consistency.
+
+### `transcripts/<mode>-<pid>.json` — conversation history
+
+The client-side transcript — all user and agent messages for a project — is saved to a per-project JSON file. On project switch, the transcript is cleared and reloaded from the saved file, so the conversation history persists across switches and restarts.
+
+Capped at 200 turn-pairs (400 messages) per project.
+
+### `auth_record.json` — MSAL authentication record
+
+Saved after first sign-in. Used for silent token refresh on subsequent launches. See [§3](#3-authentication).
+
+---
+
+## 7. SSE streaming and the agent event model
+
+The client issues a streaming POST to `/responses` and processes the SSE event stream synchronously in a background thread (the `_run_turn` / `_post_one` methods in `Bridge`). Events are pushed to JavaScript via `window.evaluate_js("window.onAgentEvent(msg)")`.
+
+### SSE event types
+
+| Event type | What it signals | Client action |
+|---|---|---|
+| `response.created` | New response started; carries `agent_session_id` | Store `session_id`; emit `session.update` |
+| `response.output_item.added` | A tool call started | Emit `tool.call` with tool name |
+| `response.function_call_arguments.delta` | Streaming tool arguments | Buffer; emit `tool.args` when complete |
+| `response.function_call_arguments.done` | Tool arguments complete | If `publish_view` tool: extract dashboard payload |
+| `response.output_text.delta` | Streaming text | Emit `text.delta`; append to agent message bubble |
+| `response.completed` | Turn done; carries final output | Emit `turn.complete` with text + dashboard |
+| `oauth_consent_request` (or similar) | First WorkIQ call needs consent | Emit `consent.required`; open browser; retry |
+| `*.failed` / `*.error` | Tool or model error | Emit `turn.error`; display in UI |
+
+### JavaScript event handling
+
+The `window.onAgentEvent` function in `ui.html` is a switch-based state machine that reacts to each event:
+
+- `tool.call` — adds an activity card to the Activity panel (tool name + animated "running" state)
+- `text.delta` — streams text into the current agent bubble, running it through the Markdown renderer
+- `turn.complete` — finalises the agent message, renders the dashboard, saves the transcript, refreshes the disk-derived view
+- `turn.error` — marks the agent bubble red, displays the error
+
+---
+
+## 8. Dashboard rendering
+
+The dashboard widget shows the live project state: title, status pill, progress bar, per-section owner tiles, exceptions panel, and activity stream.
+
+### Data sources (priority order)
+
+1. **`publish_view` tool arguments** (highest priority) — the agent calls `publish_view(payload=<dashboard>)` as its last step each turn. The client intercepts the tool's arguments from the SSE stream before the response completes and has the structured payload ready for `turn.complete`. This is the canonical source: the agent's declared view of the project state.
+
+2. **Text-fence extraction** (fallback) — if the agent's response contains a ` ```json {"kind":"dashboard",...} ``` ` block, the client parses it out. This catches models that emit JSON in prose rather than through `publish_view`.
+
+3. **`view.update` event** (post-turn) — after `turn.complete`, the client reads the agent's `$HOME` (in local mode) or the cached state (in hosted mode) and emits a `view.update` event with the disk-derived dashboard. This catches any state that the agent wrote but didn't include in `publish_view`.
+
+4. **Cache on startup / project switch** — on app launch or project switch, the last-cached dashboard from `view_cache.json` is rendered immediately so the panel isn't blank.
+
+### Dashboard data flow from agent to UI
+
+```
+Agent turn
+  └─ calls publish_view(payload={kind:"dashboard", ...})
+       └─ SSE: response.function_call_arguments.done
+            └─ client captures: published_dashboard = payload
+  └─ turn.complete event
+       └─ client emits: turn.complete {dashboard: published_dashboard}
+            └─ JS renderDashboard(d) → innerHTML replaced
+  └─ client saves to view_cache.json
+  └─ client reads disk state → emits view.update
+       └─ if dashboard in disk state: renderDashboard (overwrites with disk truth)
+```
+
+### What the dashboard renders
+
+- **Status pill** — project-level status (`kicked_off`, `in_progress`, `submitted`, `overdue`, `closed`)
+- **Owner tiles** — one tile per SOW section: avatar, name ("You" for the signed-in user), task ID, section title, status pill, last signal
+- **Progress bar** — `submitted / total` sections as a percentage
+- **Exceptions panel** — outstanding issues requiring the SOW Owner's attention
+- **Activity stream** — last 20 entries from `activity.json`, newest first
+
+---
+
+## 9. Connection and service status
+
+The header bar shows live status for the agent and WorkIQ services.
+
+### Foundry session pill
+
+Shows whether the current project has a live Foundry session:
+- **warm** — `agent_session_id` is set and the last turn completed successfully
+- **(none)** — new project, or session was reset
+
+The session ID is displayed in the header as `session: ses-abc123` and updated whenever `response.created` or `response.completed` carries a new ID.
+
+### WorkIQ service pills
+
+The Activity panel shows per-tool service indicators. When a tool call fires, the client maps the tool name (e.g., `WorkIQMail2___SendEmailWithAttachments`) to a service label (`Mail`, `Teams`, `Calendar`, etc.) and lights up the corresponding pill. Status transitions:
+
+- **calling** (animated) — tool call in progress
+- **done** — tool returned successfully
+- **error** — tool failed or returned an error event
+
+This gives immediate visual feedback on which M365 services are being accessed during a turn.
+
+### Endpoint status
+
+The header shows `endpoint: hosted → https://<agent>/responses` (or `local → http://localhost:8088/responses`). The mode dropdown disables options whose endpoint is not configured.
+
+---
+
+## 10. The autonomous agent trigger
+
+One distinctive capability: the agent can route itself to a specialised skill mid-turn, and the client will automatically re-send without the user doing anything.
+
+**How it works:**
+
+1. The user sends an ambiguous first message ("I received an RFP from Contoso")
+2. The `general` skill routes to `sow-response` by calling `route_to_skill("sow-response")`
+3. The agent's response contains the routing tool call
+4. On `turn.complete`, the client detects `_pendingSkillRoute = "sow-response"` (set when `route_to_skill` was called) and schedules `_autoTriggerSkill()` after 400ms
+5. `_autoTriggerSkill()` fires a new turn with prompt `"proceed"` and the target skill, without showing a user bubble
+6. The `sow-response` skill picks up and runs the full workflow
+
+The user sees one smooth flow: their message → brief routing response → the SOW workflow begins — with no "select a skill" prompt or second user input.
+
+---
+
+## 11. Architecture: Bridge pattern
+
+The `Bridge` class in `app.py` is the Python-side coordinator exposed to JavaScript via pywebview's `js_api`. Every button, dropdown, and send action in the UI calls a method on `Bridge`.
+
+### Key Bridge methods (callable from JavaScript)
+
+| Method | What it does |
+|---|---|
+| `ready()` | Returns initial context (session, user, projects, view) on app boot |
+| `signin_silent()` | Attempts silent token refresh using saved `AuthenticationRecord` |
+| `login()` | Interactive sign-in via WAM or browser |
+| `send(prompt, skill?)` | Starts a turn: refreshes token, posts to `/responses`, streams SSE |
+| `new_project()` | Creates a new project entry, activates it |
+| `switch_project(id)` | Swaps `session_id` / `previous_response_id` to the selected project |
+| `delete_project(id)` | Removes project from store; in hosted mode, attempts to delete the Foundry session microVM |
+| `set_mode(mode)` | Switches between `local` and `hosted` endpoint |
+| `reset_session()` | Clears `previous_response_id` (keeps `session_id` and `$HOME`) |
+| `project_view(id)` | Reads disk state (local) or cache (hosted) and returns dashboard + activity |
+
+### Event flow: JavaScript → Python → SSE → JavaScript
+
+```
+User clicks Send
+  → JS: sendPrompt(text)
+  → JS: window.pywebview.api.send(text)     [async call to Python Bridge]
+  → Python: Bridge.send()
+       → refresh token if needed
+       → spawn _run_turn in thread pool
+       → return {ok: true}
+  → Python thread: _post_one()
+       → POST /responses (stream=true)
+       → for each SSE event:
+            → self._emit("text.delta", {delta: "..."})
+                 → window.evaluate_js("window.onAgentEvent({event:'text.delta',...})")
+                      → JS: currentAgentBuffer += delta; renderAgentText()
+       → self._emit("turn.complete", {...dashboard, text, response_id})
+  → JS: turn.complete handler
+       → renderDashboard(); saveTranscript(); refreshView()
+```
+
+The Bridge uses a threading lock (`self._lock`) so only one turn runs at a time per `Bridge` instance. The UI disables the send button (`setBusy(true)`) for the duration.
