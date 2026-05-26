@@ -86,6 +86,19 @@ At boot, `skill_loader.py` reads every `SKILL.md`, validates its agentskills.io-
 
 The model at runtime receives the skill's instructions and calls tools from its allowed list to execute the workflow — **no per-step Python orchestration code**. Adding a new skill is entirely additive: drop a `SKILL.md` into a new directory.
 
+### Skill frontmatter fields
+
+| Field | Required | Purpose |
+|---|---|---|
+| `name` | yes | Unique skill identifier used for routing |
+| `description` | yes | Plain-English trigger phrases — read by the `general` skill at runtime to decide when to route |
+| `owner` | yes | Which agent owns this skill (e.g., `charter-agent`) |
+| `version` | yes | Skill version string |
+| `scenario` | yes | Scenario identifier (matches the skill directory name) |
+| `background_sync` | no | `true` to include this skill's projects in the desktop client's background poller; `false` (default) to exclude. The `sow-response` skill sets this to `true`; `general` sets it to `false`. |
+| `allowed-tools` | yes | Space-separated list of tool names the agent may call |
+| `spec` | no | Path to the functional spec for this skill |
+
 ### Skill routing
 
 Each incoming request carries a `[charter-agent-context: project_id=p-xxx skill=sow-response]` preamble. `project_router.py` strips this, sets the active project in `state.py`, and returns the resolved skill name. `responses_host.py` swaps `self._agent` to the warm Agent for that skill before invoking the MAF runtime.

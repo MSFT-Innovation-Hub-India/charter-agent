@@ -1743,6 +1743,79 @@ class Bridge:
             })
 
 
+# ---------------------------------------------------------------------------
+# Single-instance lock and system-tray helpers
+# ---------------------------------------------------------------------------
+_SINGLE_INSTANCE_HANDLE: ctypes.c_void_p | None = None
+_quit_requested = threading.Event()
+_tray: object | None = None
+
+
+def _acquire_single_instance_lock() -> bool:
+    """Return False if another instance is already running (Windows only)."""
+    global _SINGLE_INSTANCE_HANDLE
+    if sys.platform != "win32":
+        return True
+    try:
+        ERROR_ALREADY_EXISTS = 183
+        handle = ctypes.windll.kernel32.CreateMutexW(
+            None, True, "Local\\CharterAgent-SingleInstance-v1"
+        )
+        if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return False
+        _SINGLE_INSTANCE_HANDLE = handle   # keep alive for process lifetime
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[startup] single-instance lock failed: %s", exc)
+        return True  # allow startup on error
+
+
+def _setup_tray(window: webview.Window) -> None:
+    """Start the Win32 system-tray icon (Windows only). No-op on other platforms."""
+    global _tray
+    if sys.platform != "win32":
+        return
+    try:
+        from tray_icon import TrayIcon  # type: ignore[import]
+    except ImportError:
+        logger.info("[tray] tray_icon module not found — skipping")
+        return
+
+    def _toggle() -> None:
+        try:
+            if getattr(window, "_tray_hidden", False):
+                window.show()
+                window._tray_hidden = False  # type: ignore[attr-defined]
+            else:
+                window.hide()
+                window._tray_hidden = True   # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tray] toggle: %s", exc)
+
+    def _quit() -> None:
+        _quit_requested.set()
+        try:
+            window.destroy()
+        except Exception:  # noqa: BLE001
+            pass
+        import os as _os
+        _os._exit(0)
+
+    try:
+        icon_path = str(APP_ICON_ICO) if APP_ICON_ICO.exists() else None
+        _tray = TrayIcon(
+            on_show=_toggle,
+            on_quit=_quit,
+            icon_path=icon_path,
+            tooltip="Project Charter",
+        )
+        _tray.start()  # type: ignore[attr-defined]
+        logger.info("[tray] system tray icon started")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[tray] setup failed: %s", exc)
+
+
 def _set_taskbar_icon(hwnd: int) -> None:
     """Override the default pythonw.exe taskbar/title-bar icon with app_icon.ico."""
     if not hwnd or sys.platform != "win32" or not APP_ICON_ICO.exists():
@@ -1789,6 +1862,12 @@ def main() -> int:
     p.add_argument("--debug", action="store_true", help="Open WebView2 DevTools (right-click → Inspect) and verbose logging.")
     args = p.parse_args()
     _load_agent_env()
+
+    if not _acquire_single_instance_lock():
+        logger.warning("Another instance of Project Charter is already running.")
+        _notify("Project Charter", "Already running — look for the tray icon.")
+        return 0
+
     if not args.hosted_url:
         args.hosted_url = _resolve_hosted_url()
 
@@ -1823,6 +1902,21 @@ def main() -> int:
         min_size=(960, 640),
     )
     bridge._window = window
+
+    def _on_closing() -> bool | None:
+        """Hide to tray instead of destroying the window."""
+        if _quit_requested.is_set():
+            return None   # allow the real close
+        try:
+            window.hide()
+            window._tray_hidden = True   # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+        return False  # cancel the close event
+
+    window.events.closing += _on_closing
+    if sys.platform == "win32":
+        _setup_tray(window)
 
     def _on_started() -> None:
         if sys.platform != "win32":

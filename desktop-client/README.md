@@ -18,7 +18,8 @@ A native Windows desktop application that provides the user-facing surface for t
 8. [Dashboard rendering](#8-dashboard-rendering)
 9. [Connection and service status](#9-connection-and-service-status)
 10. [The autonomous agent trigger](#10-the-autonomous-agent-trigger)
-11. [Architecture: Bridge pattern](#11-architecture-bridge-pattern)
+11. [Background poller and system tray](#11-background-poller-and-system-tray)
+12. [Architecture: Bridge pattern](#12-architecture-bridge-pattern)
 
 ---
 
@@ -26,15 +27,24 @@ A native Windows desktop application that provides the user-facing surface for t
 
 ```
 desktop-client/
-├── app.py          Python process: auth, SSE streaming, Bridge (Python ↔ JS)
-├── ui.html         Single-file UI: CSS design system, HTML, JavaScript SPA
+├── app.py           Python process: auth, SSE streaming, Bridge (Python ↔ JS), system tray
+├── tray_icon.py     Win32 system-tray icon (ctypes — no third-party tray library)
+├── ui.html          Single-file UI: CSS design system, HTML, JavaScript SPA
 ├── assets/
 │   ├── app_icon.png
 │   └── app_icon.ico
+├── scripts/
+│   ├── start.ps1    Start the app in the background (no console window)
+│   ├── stop.ps1     Stop the running instance
+│   └── restart.ps1  Stop then start
+├── .env             Local configuration overrides (gitignored)
+├── .env.example     Configuration template (safe to check in)
 └── requirements.txt
 ```
 
 The application runs as a pywebview window — a native Win32 window hosting a Chromium WebView2 pane. The Python process (`app.py`) handles all networking and authentication; the JavaScript in `ui.html` handles all rendering. They communicate over the pywebview `js_api` bridge: JavaScript calls Python methods directly, and Python pushes events to JavaScript via `window.evaluate_js()`.
+
+Closing the window does **not** exit the process — the app hides to the system tray and continues running the background poller. Click the tray icon to restore the window. Use **Quit** from the tray right-click menu to fully exit.
 
 ---
 
@@ -56,18 +66,50 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+### Configuration (.env)
+
+Copy `.env.example` to `.env` and edit. The file is gitignored — it holds your deployment-specific values. Shell environment variables always win over `.env`.
+
+```powershell
+Copy-Item .env.example .env
+# Edit .env — at minimum set FOUNDRY_PROJECT_ENDPOINT or AGENT_ENDPOINT_HOSTED
+```
+
+Key settings in `.env`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AGENT_ENDPOINT_HOSTED` | _(auto-derived)_ | Full `/responses` URL of the Foundry agent |
+| `FOUNDRY_PROJECT_ENDPOINT` | — | Used to auto-build the hosted URL when `AGENT_ENDPOINT_HOSTED` is not set |
+| `AGENT_NAME` | `charter-agent` | Agent name used when constructing the hosted URL |
+| `AGENT_ENDPOINT_MODE` | `hosted` | `hosted` or `local` |
+| `AGENT_ENDPOINT_LOCAL` | `http://localhost:8088/responses` | Local dev server URL |
+| `SPIKE_TENANT_ID` | _(discovered)_ | Entra tenant ID for MSAL token acquisition |
+| `CHARTER_POLL_INTERVAL_MINS` | `30` | How often the background poller checks for new replies |
+| `CHARTER_POLL_BIZ_HOURS_ONLY` | `0` | Set to `1` to restrict polling to Mon-Fri 07:00–20:00 local time |
+
 ### Run
+
+**Option A — scripts (recommended, no console window):**
+
+```powershell
+# Start in background, icon appears in system tray
+.\scripts\start.ps1
+
+# Stop
+.\scripts\stop.ps1
+
+# Restart
+.\scripts\restart.ps1
+
+# Kill any existing instance and start fresh
+.\scripts\start.ps1 -Force
+```
+
+**Option B — directly (with console, useful for debugging):**
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-
-# Configure endpoints (at least one required)
-$env:AGENT_ENDPOINT_LOCAL  = "http://localhost:8088/responses"   # local agent
-$env:AGENT_ENDPOINT_HOSTED = "https://<your-deployed-agent>/responses"  # Foundry
-
-# Optional: start in local mode (default is hosted, falls back to local if unset)
-$env:AGENT_ENDPOINT_MODE = "local"
-
 python app.py
 ```
 
@@ -364,7 +406,51 @@ The user sees one smooth flow: their message → brief routing response → the 
 
 ---
 
-## 11. Architecture: Bridge pattern
+## 11. Background poller and system tray
+
+### System tray behaviour
+
+The app registers a Win32 system-tray icon (`tray_icon.py`, pure ctypes) when it starts. This changes two behaviours:
+
+- **Closing the window** (clicking X or Alt+F4) hides the window to the tray instead of terminating the process. The background poller and any in-flight agent turns continue uninterrupted.
+- **Clicking the tray icon** (left-click) toggles the window back to the screen.
+- **Right-clicking the tray icon** shows a context menu with **Show / Hide** and **Quit**. Quit performs a clean exit — it destroys the webview window and terminates the process.
+
+A **single-instance mutex** (`Local\CharterAgent-SingleInstance-v1`) prevents two copies of the app from running at the same time. If a second launch is attempted (manually or via `start.ps1` without `-Force`), it fires a Windows toast ("Already running — look for the tray icon.") and exits immediately.
+
+### Management scripts
+
+The `scripts/` folder provides three PowerShell scripts that manage the app process without opening a console window:
+
+| Script | What it does |
+|---|---|
+| `start.ps1` | Launches `pythonw.exe app.py` in the background. Detects an existing instance and reports its PID; use `-Force` to kill and restart. |
+| `stop.ps1` | Finds the running `pythonw.exe` launched from this project's venv and stops it. |
+| `restart.ps1` | Calls `stop.ps1` then `start.ps1 -Force`. |
+
+Process detection is done by matching the exact path of the venv's `pythonw.exe` — not by process name — so it will not accidentally affect unrelated Python processes.
+
+### Background poller
+
+The `AutoPoller` class (`app.py`) wakes up on a configurable interval and runs an autonomous check turn against every project whose active skill declares `background_sync: true` in its `SKILL.md` frontmatter. Currently only the `sow-response` skill has this flag set.
+
+**Interval:** controlled by `CHARTER_POLL_INTERVAL_MINS` in `desktop-client/.env` (default 30 minutes). Set it to a low value (e.g., `2`) for testing and restore before production use.
+
+**Business hours restriction:** set `CHARTER_POLL_BIZ_HOURS_ONLY=1` to restrict polling to Mon–Fri 07:00–20:00 local time.
+
+**Scheduler status bar** (header, bottom-right):
+- Grey countdown — idle, shows time until next check
+- Amber "Starting auto-check…" — check is about to start (past due, not yet running)
+- Blue pulse — check actively running
+- Green "Updated" — last check found new replies
+
+**"Run now ↻" button:** triggers an immediate check for the active project, using the same code path as the scheduled poller (fires a toast notification and updates the scheduler bar on completion). The button is disabled while the check is running.
+
+**Notifications:** on completion, a Windows toast is shown regardless of whether new replies were found. The toast text summarises any changes; "No new replies" confirms the check ran cleanly.
+
+---
+
+## 12. Architecture: Bridge pattern
 
 The `Bridge` class in `app.py` is the Python-side coordinator exposed to JavaScript via pywebview's `js_api`. Every button, dropdown, and send action in the UI calls a method on `Bridge`.
 
@@ -376,6 +462,7 @@ The `Bridge` class in `app.py` is the Python-side coordinator exposed to JavaScr
 | `signin_silent()` | Attempts silent token refresh using saved `AuthenticationRecord` |
 | `login()` | Interactive sign-in via WAM or browser |
 | `send(prompt, skill?)` | Starts a turn: refreshes token, posts to `/responses`, streams SSE |
+| `run_now()` | Triggers an immediate background-poller check for the active project; emits `scheduler.tick` / `scheduler.done` and fires a toast — same path as the scheduled poller |
 | `new_project()` | Creates a new project entry, activates it |
 | `switch_project(id)` | Swaps `session_id` / `previous_response_id` to the selected project |
 | `delete_project(id)` | Removes project from store; in hosted mode, attempts to delete the Foundry session microVM |

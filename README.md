@@ -6,6 +6,102 @@ A sample implementation of a **Microsoft Foundry hosted agent** that autonomousl
 
 ---
 
+## Two components, one autonomous system
+
+This repository ships as **two distinct, complementary codebases**. Neither is complete without the other.
+
+---
+
+### 1. The Hosted Agent — [`agent/`](agent/README.md)
+
+A headless, containerised Python service deployed on **Microsoft Foundry** as a first-class native hosted agent. It is the reasoning core of the system: it reads the user's M365 estate, writes the project charter, fans out kickoff briefs, monitors reply surfaces, classifies incoming submissions, tracks what is complete and what is overdue, and drafts follow-up messages.
+
+**But it cannot act on its own.** A Foundry hosted agent is reactive by design — it runs exactly when `/responses` is called, and sleeps the moment the call returns. It has no internal clock, no polling loop, and no way to initiate anything. Left alone, it is inert.
+
+#### What Foundry provides
+
+When deployed, the agent runs inside a **per-session microVM sandbox** — a persistent, isolated filesystem tied to the project's `agent_session_id`. This sandbox survives container restarts, cold starts, and idle periods of up to 30 days. The agent writes the project charter, task list, submission records, cursor positions, and every activity log entry to this sandbox. On every wake-up it reads the sandbox back and reconstructs the full project state as if it had never slept.
+
+The agent operates entirely under the **signed-in user's identity**. The desktop app attaches the user's Entra bearer token to every `/responses` POST. Foundry validates that token, routes the request to the correct microVM, and propagates the user's identity into every M365 tool call through OAuth Identity Passthrough. The agent never holds M365 credentials of its own — it acts as the user, with the user's delegated permissions, touching only the data that user is authorised to see.
+
+#### M365 intelligence through a single Toolbox entry point
+
+All M365 access flows through the **Foundry Toolbox** — a Foundry-managed MCP gateway that aggregates eight WorkIQ M365 Intelligence servers into a single endpoint. The agent connects once and has access to 135 tools spanning the entire collaboration surface:
+
+| WorkIQ server | What it provides |
+|---|---|
+| WorkIQMail | Read mailbox, find attachments, send emails |
+| WorkIQCalendar | List events, read meeting details, surface transcripts |
+| WorkIQTeams | Send DMs, read chat threads, find messages |
+| WorkIQFiles / WorkIQSharePoint | Browse and read SharePoint documents and sites |
+| WorkIQOneDrive | Upload/download files, share links |
+| WorkIQWord | Create, edit, and read Word documents |
+| WorkIQUser | Resolve UPNs, look up Entra Object IDs |
+| WorkIQCopilot | Natural-language search across the entire M365 estate |
+
+No per-service authentication. No per-service SDK. No per-service connection management. One MCP connection — the full M365 intelligence graph.
+
+---
+
+### 2. The Desktop Companion App — [`desktop-client/`](desktop-client/README.md)
+
+A lightweight native Windows application that runs **permanently in the background** on the user's machine. It is the autonomous half of the system — the part that makes the whole thing feel like an agent that never sleeps.
+
+The desktop app:
+
+- **Signs the user in** using Windows Account Manager (WAM) and maintains silent token refresh, so the user authenticates once and the app handles everything from there
+- **Manages multiple concurrent project threads** — each SOW project gets its own Foundry session with isolated microVM state; the sidebar switches between them instantly
+- **Caches conversation transcripts and dashboard state** locally, so the UI restores instantly on launch or project switch without spending a model turn
+- **Acts as the autonomous trigger** — a background poller wakes up on a configurable schedule and posts to the hosted agent on the user's behalf, using the user's own identity. This is what makes the agent check for new replies without the user having to ask. No cloud scheduler, no server-side cron, no webhook — just the app running on the user's laptop
+- **Lives in the system tray** — the user can dismiss the window at any time, but the app keeps running. The background poller keeps firing. New replies keep getting captured. Toast notifications surface anything that needs attention. Clicking the tray icon brings the window back into focus
+
+**The hosted agent is headless. The desktop app is the eyes, the schedule, and the notification surface.** Together they deliver an agent that truly runs autonomously on behalf of the user — the heavy lifting happens in the cloud, but the clock, the identity, and the user experience all live on the user's machine.
+
+```
+User's laptop (always on, system tray)    Microsoft Foundry (cloud)
+──────────────────────────────────────    ──────────────────────────────────
+Desktop Companion App                     Hosted Agent
+  ├─ MSAL / WAM sign-in                     ├─ Headless, containerised
+  ├─ Transcript + dashboard cache           ├─ Wakes on /responses only
+  ├─ Background poller (every N mins) ───►  ├─ Polls M365 on user's behalf
+  ├─ System tray — always available         ├─ Persists state to microVM
+  ├─ Toast notifications for updates        └─ Returns to sleep
+  └─ "Run now" for on-demand checks
+                   │ Bearer token (user identity)
+                   │ agent_session_id (routes to microVM)
+                   ▼
+       POST /responses  ──►  Charter-Agent-Tools Toolbox
+                                  ├─ WorkIQMail
+                                  ├─ WorkIQTeams
+                                  ├─ WorkIQCalendar
+                                  ├─ WorkIQSharePoint / Files
+                                  ├─ WorkIQOneDrive
+                                  ├─ WorkIQWord
+                                  ├─ WorkIQUser
+                                  └─ WorkIQCopilot
+```
+
+---
+
+### Skills-based extensibility
+
+The agent framework — HTTP server, Toolbox wiring, state I/O, skill loader, telemetry — is entirely generic. Every workflow capability lives in a declarative **skill manifest** (`SKILL.md`): a YAML frontmatter block that names the skill and declares its allowed tools, plus a Markdown body that becomes the agent's instructions at runtime.
+
+Adding a new business process requires **no framework code changes**. Drop a new `SKILL.md` into `agent/skills/` and the skill is automatically discovered, warm-started, and available for routing:
+
+```
+agent/skills/
+├── sow-response/       Statement of Work response coordination  (ships today)
+├── general/            Default routing and general queries       (ships today)
+├── contract-review/  ◄─ add SKILL.md → agent handles contract reviews
+├── incident-response/ ◄─ add SKILL.md → agent handles incident coordination
+└── ...                  any M365-spanning multi-week workflow
+```
+
+The `general` skill reads the `description` frontmatter of every sibling skill at runtime and routes to the right one automatically. No code changes, no redeployment of the framework — just a new file. The desktop app's background poller also reads the `background_sync` frontmatter flag from each skill to decide which projects need autonomous monitoring, so new skills opt in to background polling with a single line of configuration.
+
+---
+
 ## The scenario: why this agent is compelling
 
 When an enterprise wins an RFP and needs to produce a Statement of Work, a Programme Manager (the "SOW Owner") faces a coordination challenge that spans days or weeks:
@@ -261,8 +357,12 @@ charter-agent/
 │   ├── tests/                23 pure-Python tests (no network)
 │   └── pyproject.toml
 ├── desktop-client/           pywebview rich client
-│   ├── app.py                Auth, SSE streaming, Bridge (Python ↔ JS)
-│   └── ui.html               Single-file UI (CSS + HTML + JS)
+│   ├── app.py                Auth, SSE streaming, Bridge, single-instance lock, tray
+│   ├── tray_icon.py          Win32 system-tray icon (ctypes)
+│   ├── ui.html               Single-file UI (CSS + HTML + JS)
+│   ├── scripts/              Management scripts: start.ps1, stop.ps1, restart.ps1
+│   ├── .env.example          Configuration template
+│   └── requirements.txt
 ├── architecture/             Design documents and diagrams
 ├── functional-specs/         Requirements, scenarios, references
 ├── test-fixtures/            Sample RFP and meeting notes
@@ -279,3 +379,8 @@ charter-agent/
 - 23 tests pass — pure Python, no network required
 - Desktop client: pywebview app, multi-project sidebar, SSE streaming, dashboard widget
 - End-to-end verified: calendar query, kickoff fan-out (Teams DMs + email), submission capture
+- **System tray**: closing the window hides to tray; left-click restores; right-click menu includes Quit
+- **Single-instance lock**: only one copy of the app can run at a time; duplicate launches show a toast and exit
+- **Management scripts**: `scripts/start.ps1`, `stop.ps1`, `restart.ps1` for headless launch/stop
+- **Background poller**: configurable interval via `desktop-client/.env` (`CHARTER_POLL_INTERVAL_MINS`); Windows toast on every check completion; "Run now" button for immediate on-demand checks
+- **Skill-gated polling**: `background_sync: true/false` flag in each `SKILL.md` controls whether the poller auto-checks that skill's projects
