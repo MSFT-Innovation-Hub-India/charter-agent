@@ -1,6 +1,6 @@
 # Charter Agent — Foundry Hosted Agent Reference Implementation
 
-A production-grade reference implementation of a **Microsoft Foundry hosted agent** that autonomously orchestrates multi-week, cross-functional M365 workflows — without the user telling it what to do next.
+A sample implementation of a **Microsoft Foundry hosted agent** that autonomously orchestrates multi-week, cross-functional M365 workflows — without the user telling it what to do next.
 
 > This is the canonical example of a Foundry hosted agent calling WorkIQ M365 Intelligence on behalf of the signed-in user via OAuth Identity Passthrough at the Foundry MCP connection layer.
 
