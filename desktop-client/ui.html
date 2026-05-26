@@ -459,35 +459,48 @@
   .msg.agent .bubble strong { font-weight: 600; }
   .msg.agent .bubble em { font-style: italic; }
 
-  /* Thinking shimmer — agent bubble while waiting for the first token */
+  /* Thinking indicator — spinner + text shimmer, no coloured background */
   .bubble.thinking {
     display: flex;
     align-items: center;
     gap: 8px;
     min-height: 36px;
-    min-width: 200px;
-    color: transparent;
-    background:
-      linear-gradient(90deg,
-        rgba(255,255,255,0.05) 0%,
-        rgba(255,255,255,0.60) 50%,
-        rgba(255,255,255,0.05) 100%),
-      #d9e8f8;
-    background-size: 220% 100%, 100% 100%;
-    border: 1px solid #b0cce8;
-    animation: shimmer 1.5s linear infinite;
+  }
+  .bubble.thinking::before {
+    content: "";
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid #d0dcea;
+    border-top-color: #3b6ea5;
+    animation: thinking-spin 0.8s linear infinite;
+    flex: none;
   }
   .bubble.thinking::after {
     content: attr(data-thinking-label);
     display: block;
-    color: #3b6ea5;
     font-size: 12.5px;
     font-style: italic;
     font-weight: 500;
+    background-image: linear-gradient(
+      90deg,
+      #3b6ea5 0%,
+      #90bde8 50%,
+      #3b6ea5 100%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: shimmer 1.8s linear infinite;
   }
   @keyframes shimmer {
-    0%   { background-position: 220% 0, 0 0; }
-    100% { background-position: -220% 0, 0 0; }
+    from { background-position: 200% 0; }
+    to   { background-position: -200% 0; }
+  }
+  @keyframes thinking-spin {
+    to { transform: rotate(360deg); }
   }
 
   /* Activity / Logs column */
