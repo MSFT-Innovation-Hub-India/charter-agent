@@ -31,11 +31,11 @@
 │  Tenant boundary                                                               │
 │                                                                                │
 │  Desktop client (pywebview)                                                    │
-│    • MSAL / WAM sign-in → bearer token (scope: https://ai.azure.com/.default) │
+│    • MSAL / WAM sign-in → bearer token (scope: https://ai.azure.com/.default)  │
 │    • Multi-project sidebar: each project stores its own agent_session_id       │
 │    • Sends [charter-agent-context: project_id=p-xxx skill=sow-response]        │
 │      preamble on every prompt                                                  │
-│    • Handles oauth_consent_request SSE (opens browser, retries w/ prev_id)    │
+│    • Handles oauth_consent_request SSE (opens browser, retries w/ prev_id)     │
 │    • Caches dashboard + activity in view_cache.json for hosted mode            │
 │                                                                                │
 │              │  POST /responses                                                │
@@ -46,11 +46,11 @@
 │  │  Foundry hosted agent                                                    │  │
 │  │                                                                          │  │
 │  │  _ResilientResponsesHostServer                                           │  │
-│  │    • Parses [charter-agent-context:] preamble → sets active project     │  │
+│  │    • Parses [charter-agent-context:] preamble → sets active project      │  │
 │  │    • Routes to warm Agent for resolved skill                             │  │
 │  │                                                                          │  │
 │  │  MAF Agent per skill (warm, built at boot)                               │  │
-│  │    ├─ FoundryChatClient → gpt-5.x (Managed Identity)                    │  │
+│  │    ├─ FoundryChatClient → gpt-5.x (Managed Identity)                     │  │
 │  │    ├─ instructions: SKILL.md body                                        │  │
 │  │    └─ tools:                                                             │  │
 │  │         • MCPStreamableHTTPTool → Charter-Agent-Tools Toolbox            │  │
@@ -58,11 +58,11 @@
 │  │         • state_tools (read/write/append $HOME)                          │  │
 │  │                                                                          │  │
 │  │  Foundry runtime (platform)                                              │  │
-│  │    • Routes agent_session_id → persistent microVM                       │  │
+│  │    • Routes agent_session_id → persistent microVM                        │  │
 │  │    • Validates user bearer                                               │  │
 │  │    • On Toolbox MCP call: substitutes user identity (Identity            │  │
 │  │      Passthrough); emits oauth_consent_request on first access           │  │
-│  │    • Auto-instruments: App Insights spans, OTel traces                  │  │
+│  │    • Auto-instruments: App Insights spans, OTel traces                   │  │
 │  │                                                                          │  │
 │  │  Per-project microVM $HOME                                               │  │
 │  │    .active_project              (current project_id pointer)             │  │
@@ -79,7 +79,7 @@
 │  Charter-Agent-Tools Toolbox (Foundry-managed, preview)                        │
 │    Single MCP endpoint → 8 WorkIQ M365 Intelligence servers (135 tools)        │
 │    Mail · Calendar · Teams · Files · Word · OneDrive · User · Copilot          │
-│    User identity: from Foundry passthrough (not agent credentials)              │
+│    User identity: from Foundry passthrough (not agent credentials)             │
 │                                                                                │
 │  App Insights / OpenTelemetry                                                  │
 │    Auto-wired by ResponsesHostServer. ProcessAttributesSpanProcessor stamps    │

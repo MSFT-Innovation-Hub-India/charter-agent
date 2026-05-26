@@ -74,15 +74,29 @@ As the deadline approaches:
 - Accepted submissions are assembled into the consolidated Word document via WorkIQ Word tools
 - The deliverable URL appears on the dashboard once the document is created
 
-### Context recovery after days idle
+### Why the microVM sandbox is not optional — it's the whole point
 
-Between the SOW Owner's check-ins, the agent is completely dormant — no background threads, no scheduled jobs. When woken:
+This is worth stating plainly, because it explains every architectural decision in the system.
 
-1. It reads `project_log.json` to know every task's current status, every submission's content ID, every cursor position (which messages have already been processed)
-2. It reads the tail of `activity.json` — the chronological audit of everything that has happened — to understand the narrative of the project
-3. It picks up exactly where it left off, without needing the SOW Owner to recap
+**The agent cannot complete this workflow in a single tool-loop run.** Not because of a technical limitation — because the work itself is human-paced and inherently asynchronous.
 
-This means the agent can be left alone for a week between check-ins and still give a coherent, accurate status update the moment it's prompted. The microVM filesystem is its memory.
+The SOW Owner kicks off the project on Monday. The agent sends kickoff briefs and goes dormant. Alice, who owns the Technical Scope section, is in client meetings all week. She reads the brief on Friday and uploads her draft to SharePoint. Bob, who owns the Commercial section, is travelling — he sends his reply by email on Wednesday the following week. Carlos asks a clarifying question via Teams on Thursday and submits his section two days after he gets the answer.
+
+**None of this happens on the agent's timeline.** The agent cannot call a tool and wait for Alice to finish her document. It cannot block a loop iteration waiting for Bob's email. It cannot poll in a background thread — there is no background thread. It runs once per `/responses` call, does what it can with what it knows, and stops.
+
+This means the agent must:
+
+1. **Commit state before going dormant.** At the end of every turn, it writes the full current picture to `project_log.json` — every task, every submission received, every cursor marking which messages it has already processed. If it fails to persist, it forgets.
+
+2. **Reconstruct world-state from scratch on every wake-up.** When the SOW Owner checks in three days later, the agent has no in-memory state. It reads `project_log.json` (what was true when it last ran), then queries M365 for what happened since each stored cursor (what's new), and synthesises the current picture before deciding what to do next.
+
+3. **Use cursors to avoid reprocessing.** The project log stores a `last_polled_at` timestamp per task. On each resume, the agent queries Mail and Teams `since=<cursor>` — so it only sees messages that arrived after its last check. Without this, it would re-read every message ever sent, re-classify them, and potentially draft duplicate nudges.
+
+4. **Treat the activity log as shared memory.** Every decision, every action, every status change is appended to `activity.json`. This is not logging for debugging — it is the agent's working memory across dormancy periods. When it wakes up, reading the last 20 activity entries tells it immediately: "I sent kickoffs to four people. Two have submitted. One asked a question. One is overdue and I drafted a nudge." It does not need the SOW Owner to recap.
+
+5. **Never assume an action was completed just because a tool was called.** Sending a kickoff Teams DM is one tool call. But the recipient reading it, understanding it, and producing a submission is a human process that takes days. The agent records that the DM was sent — it cannot record that the human acted. The gap between those two facts is exactly the time the agent spends dormant, and the M365 channel poll on the next wake-up is what closes that gap.
+
+The Foundry microVM sandbox — a persistent filesystem tied to a session that survives container restarts and cold starts — is the architectural answer to this constraint. Without it, every agent wake-up would start from a blank slate, unable to distinguish "I have never talked to this project" from "I have been running this project for three weeks and here is exactly where it stands." With it, the agent behaves like a coordinator who went home for the weekend and came back Monday knowing exactly where everything stands.
 
 ---
 
