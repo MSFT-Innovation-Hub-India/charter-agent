@@ -4,6 +4,8 @@ A sample implementation of a **Microsoft Foundry hosted agent** built on a **ski
 
 > This is the canonical example of a Foundry hosted agent calling WorkIQ M365 Intelligence on behalf of the signed-in user via OAuth Identity Passthrough at the Foundry MCP connection layer.
 
+![Solution Architecture](architecture/solutionarchitecture.png)
+
 ---
 
 ## Two components, one autonomous system
