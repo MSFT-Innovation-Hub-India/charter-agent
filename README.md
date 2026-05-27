@@ -1,6 +1,6 @@
-# Charter Agent — Foundry Hosted Agent Reference Implementation
+# Charter Agent — Foundry Hosted Agent Implementation
 
-A sample implementation of a **Microsoft Foundry hosted agent** that autonomously orchestrates multi-week, cross-functional M365 workflows — without the user telling it what to do next.
+A sample implementation of a **Microsoft Foundry hosted agent** built on a **skill-based architecture** — where every business workflow is a self-contained, declarative skill the agent discovers and executes automatically. This repo ships the **SOW Response Orchestration** skill as its reference implementation, autonomously driving an RFP response from kickoff through signed project charter across multi-week, cross-functional M365 workflows. The same framework supports any number of additional skills — drop in a new skill manifest and the agent handles an entirely new business process, no framework changes required. Per-session state is **isolated in microVMs** so each conversation picks up exactly where it left off, even after periods of inactivity.
 
 > This is the canonical example of a Foundry hosted agent calling WorkIQ M365 Intelligence on behalf of the signed-in user via OAuth Identity Passthrough at the Foundry MCP connection layer.
 
