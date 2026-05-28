@@ -137,7 +137,7 @@ Authentication falls through a priority chain:
 
 ### Token persistence
 
-After the first successful interactive sign-in, the client saves an **`AuthenticationRecord`** to `%LOCALAPPDATA%\charter-agent\auth_record.json`. This record contains enough information to silently re-acquire tokens on subsequent launches — no password re-entry, no browser pop-up, unless the refresh token expires.
+After the first successful interactive sign-in, the client saves an **`AuthenticationRecord`** to `%USERPROFILE%\.charter-agent\auth_records\charter-agent-desktop.json`. This record contains enough information to silently re-acquire tokens on subsequent launches — no password re-entry, no browser pop-up, unless the refresh token expires.
 
 The MSAL token cache itself is encrypted on disk via Windows DPAPI (through `azure-identity`'s `TokenCachePersistenceOptions`).
 
@@ -235,7 +235,7 @@ Additionally, before any send that has been idle for more than 12 minutes, the c
 
 ## 6. Local storage and cache
 
-All client-side state is stored in `%LOCALAPPDATA%\charter-agent\` (Windows) or `~/.local/share/charter-agent/` (other platforms).
+All client-side state is stored in `%USERPROFILE%\.charter-agent\` (Windows) or `~/.charter-agent/` (other platforms).
 
 ### `projects.json` — the project registry
 

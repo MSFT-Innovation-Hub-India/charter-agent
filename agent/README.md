@@ -71,13 +71,24 @@ All workflow behaviour is declared in **skill manifests** under `agent/skills/{s
 
 ```
 agent/skills/
-├── sow-response/
-│   ├── SKILL.md          Agent instructions (loaded as Agent.instructions at boot)
-│   ├── tools.py          In-process Python tools (dashboard_payload, record_submission, etc.)
-│   └── references/       Supporting reference docs (classification rubric, SOW sections, etc.)
-└── general/
-    ├── SKILL.md          Default skill for routing and general queries
-    └── (no tools.py)
+├── general/
+│   └── SKILL.md          Default front-facing skill (handles greetings, routes via route_to_skill)
+└── sow-response/
+    ├── SKILL.md          Orchestrator skill: delegates each phase to a sub-skill via invoke_skill
+    ├── charter-draft/    Sub-skill: drafts the project charter
+    │   └── SKILL.md
+    ├── kickoff-extract/  Sub-skill: extracts owners/tasks from the kickoff meeting
+    │   └── SKILL.md
+    ├── reply-poll/       Sub-skill: polls Mail/Teams for new replies and classifies them
+    │   └── SKILL.md
+    ├── rfp-search/       Sub-skill: locates the RFP in the user's M365 environment
+    │   └── SKILL.md
+    └── task-allocate/    Sub-skill: allocates SOW sections to owners
+        └── SKILL.md
+
+# In-process Python tools shared by sow-response sub-skills live at:
+#   agent/src/charter_agent/skills/sow_response/tools.py
+# (dashboard_payload, record_submission, publish_view, etc.)
 ```
 
 At boot, `skill_loader.py` reads every `SKILL.md`, validates its agentskills.io-conformant frontmatter, and constructs one warm **MAF `Agent`** per skill. Each Agent gets:
@@ -88,16 +99,18 @@ The model at runtime receives the skill's instructions and calls tools from its 
 
 ### Skill frontmatter fields
 
-| Field | Required | Purpose |
-|---|---|---|
-| `name` | yes | Unique skill identifier used for routing |
-| `description` | yes | Plain-English trigger phrases — read by the `general` skill at runtime to decide when to route |
-| `owner` | yes | Which agent owns this skill (e.g., `charter-agent`) |
-| `version` | yes | Skill version string |
-| `scenario` | yes | Scenario identifier (matches the skill directory name) |
-| `background_sync` | no | `true` to include this skill's projects in the desktop client's background poller; `false` (default) to exclude. The `sow-response` skill sets this to `true`; `general` sets it to `false`. |
-| `allowed-tools` | yes | Space-separated list of tool names the agent may call |
-| `spec` | no | Path to the functional spec for this skill |
+Per the [agentskills.io spec](https://agentskills.io/specification), only `name` and `description` are required at the top level. Everything else is optional; arbitrary key/value pairs go under `metadata:`.
+
+| Field | Where | Required | Purpose |
+|---|---|---|---|
+| `name` | top level | yes | Unique skill identifier; must match the parent directory name |
+| `description` | top level | yes | Plain-English trigger phrases — read by the `general` skill at runtime to decide when to route |
+| `allowed-tools` | top level | no | Space-separated list of tools the skill may invoke (in-process tools are always available; external tools — like the Toolbox `workiq*` surface — must be listed here to be wired in) |
+| `metadata.owner` | under `metadata` | no | Owning component (e.g., `charter-agent`) |
+| `metadata.workflow` | under `metadata` | no | Workflow name; used by sub-skills under `sow-response/` to declare their parent workflow |
+| `metadata.version` | under `metadata` | no | Free-form version string |
+| `metadata.scenario` | under `metadata` | no | Scenario identifier (set on `general` today) |
+| `metadata.background_sync` | under `metadata` | no | `true` to include this skill's projects in the desktop client's background poller; default is `false` (no autonomous polling) |
 
 ### Skill routing
 
@@ -107,21 +120,27 @@ Each incoming request carries a `[charter-agent-context: project_id=p-xxx skill=
 
 ## 4. The autonomous agent loop
 
-The core insight: **the agent drives itself**. The SOW Owner's single prompt ("I received an RFP from Contoso, get started") triggers a MAF tool loop that:
+The core insight: **the agent drives itself**. The SOW Owner's single prompt ("I received an RFP from Contoso, get started") triggers a MAF tool loop that grounds the project in M365, commits state, fans out kickoff briefs, monitors reply surfaces, classifies inbound activity, updates task status, drafts follow-ups, and publishes a dashboard payload — all within a single `/responses` turn.
 
-1. **Grounds** — calls WorkIQ Copilot to find the kickoff meeting and RFP in the user's M365 environment
-2. **Understands** — extracts owners, due dates, and requirements from Teams meeting transcripts and the RFP document
-3. **Commits** — writes `project_charter.md` and `project_log.json` to the microVM filesystem
-4. **Fans out** — sends kickoff briefs (Teams DMs for internals, emails for externals) and records `kickoff_sent` in the project log
-5. **Monitors** — on subsequent visits, polls Mail, Teams, and Files for activity since the last cursor
-6. **Classifies** — applies the CLASSIFICATION_RUBRIC to each incoming item (submission / question / supporting / unrelated)
-7. **Updates** — writes submission records, adjusts task status, flags overdue items
-8. **Drafts follow-ups** — writes suggested nudge messages (never sends without explicit user approval)
-9. **Publishes** — calls `publish_view` to push the current dashboard state to the desktop client
+The work is **not** done by one monolithic skill. The `sow-response` skill is an **orchestrator**: its body decides which workflow phase the project is in (by reading `project_log.json`) and delegates the actual reasoning to a **sub-skill** via the `invoke_skill(name, input)` tool. Each sub-skill is itself an Agent Skill with its own `SKILL.md` body, its own `allowed-tools` list, and its own scoped responsibility. The orchestrator stitches them together; the sub-skills do the work.
 
-The user never sees steps 1–9 as a sequence they have to drive. They see a response: "I've kicked off the SOW. Here's the charter. Four briefs sent." Then, days later: "Submissions received from 2 of 4. One is incomplete — I've drafted a follow-up for your approval."
+### Orchestrator → sub-skills
 
-**The agent loop is stateless between calls.** It reconstructs its position from `project_log.json` and `activity.json` on every turn. There are no background threads, no cron jobs, no webhook listeners. The user (or an automation) initiates each turn by posting to `/responses`.
+| Workflow stage | Sub-skill invoked | What the sub-skill owns |
+|---|---|---|
+| Discover the RFP in the user's mailbox / files | [`sow-rfp-search`](skills/sow-response/rfp-search/SKILL.md) | WorkIQ Mail / Files / Copilot search; halts and asks if not found (no fabrication) |
+| Draft the project charter from the RFP + grounding context | [`sow-charter-draft`](skills/sow-response/charter-draft/SKILL.md) | RFP requirements → charter Markdown; emits `project_charter.md` |
+| Extract owners and tasks from the kickoff meeting transcript | [`sow-kickoff-extract`](skills/sow-response/kickoff-extract/SKILL.md) | WorkIQ Calendar / Teams transcript reading; produces the owner list |
+| Allocate SOW sections to owners and fan out kickoff briefs | [`sow-task-allocate`](skills/sow-response/task-allocate/SKILL.md) | Communication matrix application; seeds `project_log.json` tasks; sends Teams DMs / emails after approval |
+| Poll Mail/Teams for new replies since last cursor and classify | [`sow-reply-poll`](skills/sow-response/reply-poll/SKILL.md) | Channel cursor advancement; `CLASSIFICATION_RUBRIC` application; status updates |
+
+The orchestrator owns the **between-phase** concerns: which sub-skill runs next, halt-on-failure, persistence of phase pointers in `project_log.json`, the closing dashboard payload via `publish_view`. The sub-skills own the **within-phase** reasoning and tool dispatch. Adding a new phase = drop a new sub-skill SKILL.md into `agent/skills/sow-response/` and reference it from the orchestrator body. No host-code change.
+
+### What this gives the user
+
+The user never sees the orchestrator → sub-skill hops as a sequence they have to drive. They see a response: "I've kicked off the SOW. Here's the charter. Four briefs sent." Then, days later: "Submissions received from 2 of 4. One is incomplete — I've drafted a follow-up for your approval."
+
+**The agent loop is stateless between calls.** It reconstructs its position from `project_log.json` and `activity.json` on every turn. There are no server-side background threads, no cron jobs, no webhook listeners. Each turn is initiated by a POST to `/responses` — either by the SOW Owner typing into the desktop client, or by the desktop client's opt-in background poller posting on their behalf under their identity (see [desktop-client/README.md §11](../desktop-client/README.md)).
 
 ---
 

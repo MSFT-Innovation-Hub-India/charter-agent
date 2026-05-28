@@ -14,10 +14,10 @@
 
 | Principle (from spec) | Concrete design decision |
 |---|---|
-| **Skills-first, agentskills.io-conformant** | Every reusable capability is packaged as an Agent Skill under `agent/skills/{name}/` with a valid `SKILL.md`. A small in-repo loader (`runtime/skill_loader.py`) reads each `SKILL.md`, validates the frontmatter, and injects the body into the host MAF `Agent` at boot. See [AGENTS.md §4.3](../AGENTS.md#43-agent-skills-format-agentskillsio-conformance) for the format contract and [§4.4](../AGENTS.md#44-core-code-vs-skill--the-decision-rule) for the core-vs-skill decision rule. Today one skill ships: `sow-response`. |
+| **Skills-first, agentskills.io-conformant** | Every reusable capability is packaged as an Agent Skill under `agent/skills/{name}/` with a valid `SKILL.md`. A small in-repo loader (`runtime/skill_loader.py`) reads each `SKILL.md`, validates the frontmatter, and constructs one warm MAF `Agent` per skill. See [AGENTS.md §4.3](../AGENTS.md#43-agent-skills-format-agentskillsio-conformance) for the format contract and [§4.4](../AGENTS.md#44-core-code-vs-skill--the-decision-rule) for the core-vs-skill decision rule. Today two skills ship at the top level: `general` (default router) and `sow-response` (SOW workflow orchestrator). `sow-response` further delegates to five sub-skills (`charter-draft`, `kickoff-extract`, `reply-poll`, `rfp-search`, `task-allocate`) via the `invoke_skill` tool. |
 | Generic over project-specific | Two layers of variability: **Charter (data, today a markdown document at `$HOME/project_charter.md`)** → **Agent Skills (declarative behaviour)** → generic agent (constant). Nothing else varies per project. |
 | **Identity passthrough for WorkIQ** | The desktop client authenticates the *end user* and attaches their bearer to `/responses`. The Foundry runtime exchanges that identity into a WorkIQ token internally per Toolbox connection. The agent process holds no WorkIQ refresh tokens and runs no OBO flow. See [§7](#7-identity--auth) for the full flow and [`../spike/desktop_to_foundry/`](../spike/desktop_to_foundry/) for the spike that established this. |
-| No background workers | The agent only runs when `/responses` is called. There is no autonomous wake-up loop. |
+| No server-side background workers | The agent on Foundry only runs when `/responses` is called — there is no autonomous wake-up loop in the agent process. The desktop client, however, includes an opt-in background poller that wakes on a configurable interval (`CHARTER_POLL_INTERVAL_MINS`, default 30) and triggers a capture/status-refresh turn for projects whose active skill declares `metadata.background_sync: true`. Polling is human-identity-driven (uses the signed-in user's bearer) and confined to the desktop client process. |
 | State lives in `$HOME` | `state.py` is the only module that touches files in `$HOME`. Atomic write-via-temp-then-rename for every mutation. The MAF `AgentSession` thread persists to `$HOME/agent_session/` and is resumed across calls. |
 | Human-in-the-loop outbound | The skill drafts outbound; the user approves; the skill sends in the user's identity (which has already been propagated by Foundry). |
 | Single runtime | One MAF `Agent` (from `agent_framework`, **not** `ChatAgent`) on a Foundry `gpt-5.x` deployment via Managed Identity. No second LLM path, no codegen sub-agent. |
@@ -110,19 +110,23 @@ Aspirational modules from the spec (`charter/`, `kickoff/`, `capture/handlers/*`
 
 ---
 
-## 4. The `sow-response` skill
+## 4. The shipped skills
 
-The one skill that ships. End-to-end SOW response workflow — first-run mode (kickoff) and resume mode (capture + status update + consolidation). Generic across customers/projects; per-engagement variety lives in the Charter it reasons against.
+Two top-level skills ship today:
 
-Structure:
+- **`general`** — the default front-facing skill. Handles greetings, generic questions, and any prompt that arrives before a workflow has been chosen. When it detects SOW/RFP intent in a prompt, it calls `route_to_skill("sow-response")` to register the active skill for the project; the desktop client picks up the routing event and auto-sends the next turn so the user sees a single continuous conversation. `metadata.background_sync: false` (no autonomous polling for `general`-only projects).
+- **`sow-response`** — the SOW workflow orchestrator. End-to-end SOW response workflow — first-run mode (kickoff) and resume mode (capture + status update + consolidation). Generic across customers/projects; per-engagement variety lives in the Charter it reasons against. Operates as a phase-driven orchestrator: the body calls `invoke_skill(...)` to delegate each workflow stage to a dedicated sub-skill (`charter-draft`, `kickoff-extract`, `reply-poll`, `rfp-search`, `task-allocate`) under `agent/skills/sow-response/`. The orchestrator owns sequencing, halt-on-failure, and the dashboard payload (`publish_view`); the sub-skills own the per-phase reasoning and tool dispatch.
 
-- [`agent/skills/sow-response/SKILL.md`](../agent/skills/sow-response/SKILL.md) — the body.
-  - §1 mode-detect (first-run vs resume, based on presence of `$HOME/project_charter.md`)
-  - §2–§7 first-run: ground from the triggering email/meeting/prior artifact, propose Charter, ratify, fan out to M365 (SharePoint folder, templated files, Outlook tasks, briefing emails, Teams kickoff message)
-  - §8 resume: load state, poll watched channels for activity since last cursor
-  - §9 capture & classify: classify each event per [`references/CLASSIFICATION_RUBRIC.md`](../agent/skills/sow-response/references/CLASSIFICATION_RUBRIC.md), update `project_log.json` task status, draft (but never auto-send) nudges/clarifications
-  - §10 must-NOT rules
-- `references/`:
+Structure of `sow-response`:
+
+- [`agent/skills/sow-response/SKILL.md`](../agent/skills/sow-response/SKILL.md) — the orchestrator body. Owns phase sequencing, mode-detect (first-run vs resume based on `project_log.json`), halt-on-failure, dashboard payload assembly. Delegates per-phase reasoning to sub-skills via `invoke_skill(...)`.
+- Sub-skills (each is a folder with its own `SKILL.md` under `agent/skills/sow-response/`):
+  - [`rfp-search/`](../agent/skills/sow-response/rfp-search/SKILL.md) — locate the RFP in the user's M365 environment via WorkIQ Mail/Files.
+  - [`charter-draft/`](../agent/skills/sow-response/charter-draft/SKILL.md) — draft `project_charter.md` from the grounded RFP + kickoff context.
+  - [`kickoff-extract/`](../agent/skills/sow-response/kickoff-extract/SKILL.md) — extract owners, tasks, and runbook items from the kickoff meeting transcript.
+  - [`task-allocate/`](../agent/skills/sow-response/task-allocate/SKILL.md) — fan out kickoff briefs (Teams DMs for internals, emails for externals) and seed `project_log.json`.
+  - [`reply-poll/`](../agent/skills/sow-response/reply-poll/SKILL.md) — poll Mail/Teams for new activity since the last cursor, classify per [`references/CLASSIFICATION_RUBRIC.md`](../agent/skills/sow-response/references/CLASSIFICATION_RUBRIC.md), update task status, draft (but never auto-send) follow-ups.
+- `references/` (shared by orchestrator + sub-skills):
   - [`SOW_SECTIONS.md`](../agent/skills/sow-response/references/SOW_SECTIONS.md) — section taxonomy
   - [`COMMUNICATION_MATRIX.md`](../agent/skills/sow-response/references/COMMUNICATION_MATRIX.md) — channel choice per task type
   - [`CLASSIFICATION_RUBRIC.md`](../agent/skills/sow-response/references/CLASSIFICATION_RUBRIC.md) — submission vs question vs supporting vs unrelated

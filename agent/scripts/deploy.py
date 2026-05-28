@@ -24,7 +24,7 @@ PROJECT_ENDPOINT = os.environ.get(
 )
 AGENT_NAME = os.environ.get("AGENT_NAME", "charter-agent")
 IMAGE = os.environ.get(
-    "AGENT_IMAGE", "pcdotaiagentd10b5a.azurecr.io/charter-agent:v5"
+    "AGENT_IMAGE", "pcdotaiagentd10b5a.azurecr.io/charter-agent:v6"
 )
 MODEL_DEPLOYMENT = os.environ.get("AZURE_AI_MODEL_DEPLOYMENT_NAME", "gpt-5.4")
 TOOLBOX_NAME = os.environ.get("TOOLBOX_NAME", "Charter-Agent-Tools")

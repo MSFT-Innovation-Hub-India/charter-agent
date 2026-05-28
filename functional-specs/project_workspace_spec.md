@@ -1,6 +1,6 @@
 # Project Workspace — Implementation Specification
 
-> An agent-orchestrated project coordination workspace built on Microsoft Foundry hosted agents and WorkIQ. The agent is **generic** — its behaviour is shaped by Agent Skills loaded at boot. Today the only scenario in scope is the **SOW Response** workflow, packaged as the [`sow-response`](../agent/skills/sow-response/) skill. Additional scenarios (board pack, audit response, etc.) would land as additional skills with no change to the agent itself.
+> An agent-orchestrated project coordination workspace built on Microsoft Foundry hosted agents and WorkIQ. The agent is **generic** — its behaviour is shaped by Agent Skills loaded at boot. Today two top-level skills ship: [`general`](../agent/skills/general/) (the default front-facing skill — handles greetings, generic questions, and routes to workflow skills when intent is detected) and [`sow-response`](../agent/skills/sow-response/) (the in-scope **SOW Response** workflow, implemented as a phase orchestrator that delegates to five sub-skills). Additional workflows (board pack, audit response, etc.) would land as additional top-level skills with no change to the agent itself.
 
 ---
 
@@ -99,7 +99,7 @@ This three-layer separation is what makes the system handle any scenario without
 
 These are deliberate exclusions; the implementing agent should not introduce them.
 
-- **No cron jobs, no scheduled tasks, no background workers.** The agent only acts when a user invokes it. WorkIQ cannot run on a service identity, so autonomous background activity would lose the user context that makes WorkIQ work at all.
+- **No server-side cron jobs, scheduled tasks, or background workers.** The agent on Foundry only acts when `/responses` is called. WorkIQ cannot run on a service identity, so autonomous *server-side* background activity would lose the user context that makes WorkIQ work at all. The desktop client, however, runs an opt-in *client-side* background poller (default every 30 minutes, configurable) under the signed-in user's identity — it auto-posts capture/status turns for projects whose active skill declares `metadata.background_sync: true` in its SKILL.md. The agent is still the same `/responses` consumer; the user identity is still passed through. There is no service-identity wake-up loop anywhere.
 - **No per-project deployment.** Per-project specificity comes from session state inside the sandbox, not from infrastructure.
 - **No project database, no message queue, no event bus.** `$HOME` in the session sandbox is the project's state store.
 - **No exposing arbitrary ports from the sandbox.** Foundry hosted agents only serve `/responses`. The client reaches the agent through that gated endpoint and nothing else.
@@ -193,11 +193,17 @@ The dashboard has exactly one human user — the **SOW Owner** — who ratifies 
 - **Approval of drafted outbound actions.** The agent never sends a Teams message, email, or task autonomously. It drafts and surfaces; the SOW Owner approves (or dismisses); the agent then sends in the SOW Owner's identity.
 - **Mid-project amendments.** "Reassign Talent to Sofia." "Add a vendor-risk section to the SOW." "Change the deadline." The agent re-ratifies the affected Charter slice before acting.
 
-### 5.3 The on-visit refresh model
+### 5.3 The on-visit refresh model (and the opt-in background poller)
 
-The agent only acts when invoked. On every `/responses` turn the SOW Owner sends, the skill body runs whatever capture-and-status loop is appropriate for the prompt — typically polling each in-flight task's channels via WorkIQ, classifying new events, updating `project_log.json`, then summarising back to the SOW Owner. There is no background polling, no scheduled wake-up.
+The agent only acts when `/responses` is called. On every turn the SOW Owner sends, the skill body runs whatever capture-and-status loop is appropriate for the prompt — typically polling each in-flight task's channels via WorkIQ, classifying new events, updating `project_log.json`, then summarising back to the SOW Owner.
 
-The 15-minute idle timeout means a first turn after a long pause may take 2–5 seconds to warm up; the client should show a "warming up…" indicator and then stream as normal.
+In addition, the desktop client runs an **opt-in background poller** under the signed-in user's identity. On a configurable interval (default 30 minutes via `CHARTER_POLL_INTERVAL_MINS`, optionally restricted to business hours), it iterates over the user's projects and — for each project whose active skill declares `metadata.background_sync: true` — auto-posts a capture/status turn to `/responses`. The agent process is unchanged; the poller just makes the SOW Owner's normal "refresh" prompts happen without them having to type. New activity surfaces as a Windows toast notification with a deep link back to the project. There is **no** service-identity wake-up — the user's bearer is required, so the poller only runs while the user is signed in to the desktop client.
+
+The 15-minute Foundry idle timeout means a first turn after a long pause may take 2–5 seconds to warm up; the client should show a "warming up…" indicator and then stream as normal.
+
+### 5.4 System tray and single-instance behaviour
+
+The desktop client lives in the Windows system tray. Closing the main window hides to tray; the background poller continues running. Clicking the tray icon restores the window. A single-instance mutex (`Local\CharterAgent-SingleInstance-v1`) prevents multiple copies of the app from starting — a second launch attempt foregrounds the existing window instead.
 
 ---
 
@@ -244,7 +250,9 @@ When the SOW Owner says *"add a vendor-risk section, owned by Marcus"* mid-proje
 
 ### 7.1 The skill-based specialisation model
 
-A scenario is one Agent Skill under [`../agent/skills/{name}/`](../agent/skills/) with a `SKILL.md` body (per the [agentskills.io spec](https://agentskills.io/specification)) plus optional `references/`, `scripts/`, `assets/` subdirs. The skill is auto-loaded at boot by [`runtime/skill_loader.py`](../agent/src/charter_agent/runtime/skill_loader.py) and injected as the warm host `Agent`'s `instructions`. The host model selects among loaded skills based on each skill's `description` (which must say *what* it does and *when* to use it, with trigger keywords). Today there is only one — `sow-response` — so the routing is trivial.
+A scenario is one Agent Skill under [`../agent/skills/{name}/`](../agent/skills/) with a `SKILL.md` body (per the [agentskills.io spec](https://agentskills.io/specification)) plus optional `references/`, `scripts/`, `assets/` subdirs. The skill is auto-loaded at boot by [`runtime/skill_loader.py`](../agent/src/charter_agent/runtime/skill_loader.py); the loader builds one warm host `Agent` per skill, each with the skill body as `instructions`.
+
+Skill selection happens in two steps. (1) Routing: each `/responses` request carries a `[charter-agent-context: project_id=… skill=…]` preamble; the runtime swaps to the warm `Agent` for the resolved skill before invoking the model. The default skill for a new project is `general`. (2) Hand-off: when `general` detects intent for a workflow skill (e.g., SOW/RFP language), it calls `route_to_skill("sow-response")`, which records the active skill for the project; the desktop client picks up the routing event and auto-sends the next turn against the target skill so the user sees a single continuous conversation. Top-level skills today are `general` and `sow-response`; `sow-response` further composes five sub-skills (`charter-draft`, `kickoff-extract`, `reply-poll`, `rfp-search`, `task-allocate`) which it invokes within a turn via `invoke_skill(...)`.
 
 A skill's `SKILL.md` describes:
 - The triggering condition (when the host model should activate this skill).
