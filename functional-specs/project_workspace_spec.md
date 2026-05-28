@@ -252,7 +252,13 @@ When the SOW Owner says *"add a vendor-risk section, owned by Marcus"* mid-proje
 
 A scenario is one Agent Skill under [`../agent/skills/{name}/`](../agent/skills/) with a `SKILL.md` body (per the [agentskills.io spec](https://agentskills.io/specification)) plus optional `references/`, `scripts/`, `assets/` subdirs. The skill is auto-loaded at boot by [`runtime/skill_loader.py`](../agent/src/charter_agent/runtime/skill_loader.py); the loader builds one warm host `Agent` per skill, each with the skill body as `instructions`.
 
-Skill selection happens in two steps. (1) Routing: each `/responses` request carries a `[charter-agent-context: project_id=… skill=…]` preamble; the runtime swaps to the warm `Agent` for the resolved skill before invoking the model. The default skill for a new project is `general`. (2) Hand-off: when `general` detects intent for a workflow skill (e.g., SOW/RFP language), it calls `route_to_skill("sow-response")`, which records the active skill for the project; the desktop client picks up the routing event and auto-sends the next turn against the target skill so the user sees a single continuous conversation. Top-level skills today are `general` and `sow-response`; `sow-response` further composes five sub-skills (`charter-draft`, `kickoff-extract`, `reply-poll`, `rfp-search`, `task-allocate`) which it invokes within a turn via `invoke_skill(...)`.
+Skill selection happens in three layers, with the first match winning:
+
+1. **Preamble hint.** Each `/responses` request may carry a `[charter-agent-context: project_id=… skill=…]` preamble; if `skill=` is set, the runtime swaps to that warm `Agent` and stops.
+2. **Persisted skill.** Otherwise, if the project's `project_log.json` exists with a `skill` field, the runtime uses it.
+3. **First-turn classifier.** Otherwise (a brand-new project on its first message), the runtime makes one short non-tool LLM call through the shared warm Foundry client that scores the user's text against every registered skill's `description` frontmatter and picks the best match, defaulting to `general` on error or ambiguity. The choice is persisted to `project_log.json` so subsequent turns skip the classifier — one call per project lifetime. There is no client-side auto-trigger, no hidden second request, and no "select a skill" UX step.
+
+Top-level skills today are `general` (pure fallback for prompts the classifier can't match) and `sow-response` (the SOW workflow orchestrator). `sow-response` further composes five sub-skills (`charter-draft`, `kickoff-extract`, `reply-poll`, `rfp-search`, `task-allocate`) which it invokes within a turn via `invoke_skill(...)`.
 
 A skill's `SKILL.md` describes:
 - The triggering condition (when the host model should activate this skill).

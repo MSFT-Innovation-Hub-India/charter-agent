@@ -389,20 +389,21 @@ The header shows `endpoint: hosted → https://<agent>/responses` (or `local →
 
 ---
 
-## 10. The autonomous agent trigger
+## 10. First-turn skill routing
 
-One distinctive capability: the agent can route itself to a specialised skill mid-turn, and the client will automatically re-send without the user doing anything.
+When the user starts a new project, the host (not the client) picks the right workflow skill on the very first turn — there is no client-side auto-trigger or hidden second request.
 
 **How it works:**
 
-1. The user sends an ambiguous first message ("I received an RFP from Contoso")
-2. The `general` skill routes to `sow-response` by calling `route_to_skill("sow-response")`
-3. The agent's response contains the routing tool call
-4. On `turn.complete`, the client detects `_pendingSkillRoute = "sow-response"` (set when `route_to_skill` was called) and schedules `_autoTriggerSkill()` after 400ms
-5. `_autoTriggerSkill()` fires a new turn with prompt `"proceed"` and the target skill, without showing a user bubble
-6. The `sow-response` skill picks up and runs the full workflow
+1. The user sends a first message ("I received an RFP from Contoso").
+2. The host's `_ResilientResponsesHostServer` checks: no preamble `skill=`, no persisted `project_log["skill"]` → it's a brand-new project.
+3. The host runs a one-shot LLM classifier against the message and the registered skills' `description` fields, picks the best skill (e.g. `sow-response`), and persists it to `project_log.json`.
+4. The host swaps `self._agent` to the warm Agent for that skill and forwards the same turn to it. The user's message is handled by the correct skill immediately — one request, one response.
+5. Subsequent turns read the persisted skill from `project_log.json` and skip the classifier entirely.
 
-The user sees one smooth flow: their message → brief routing response → the SOW workflow begins — with no "select a skill" prompt or second user input.
+The user sees: their message → the workflow begins. No placeholder bubble, no "select a skill" prompt, no client-side retry.
+
+Adding a new top-level workflow is purely additive: drop a `SKILL.md` with a good `description` under `agent/skills/<name>/`. The classifier picks it up at boot via `skill_loader`.
 
 ---
 

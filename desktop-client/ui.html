@@ -721,7 +721,6 @@ let currentAgentBuffer = "";      // accumulated agent text for the in-flight tu
 let activeTool = null;            // {node, startedAt, ticker} for the most recent tool.call
 const shownPhaseCards = new Set();// phase-card keys already rendered this turn
 let _currentTurnIsAuto = false;   // true when the running turn was triggered by AutoPoller
-let _lastUserPrompt = "";         // original message from the most recent user sendPrompt(); passed to skill auto-trigger
 let _pollIntervalMins = 30;       // learned from ctx.poll_interval_mins at boot
 let _nextCheckAt = 0;             // epoch ms when next auto-check fires; 0 = unknown
 let _schedCountdownTimer = null;
@@ -1475,7 +1474,6 @@ async function sendPrompt(text) {
   if (!text || busy) return;
   if (!await ensureSignedIn()) return;
 
-  _lastUserPrompt = text;
   addMsg("user", "you", text);
   currentAgentBuffer = "";
   currentAgentMsg = addMsg("agent", "agent", "");
@@ -1490,43 +1488,13 @@ async function sendPrompt(text) {
   }
 }
 
-async function _autoTriggerSkill() {
-  // Called when the skill changed during the last turn (e.g. general → sow-response).
-  // Fires a silent follow-up turn so the new skill picks up immediately without the
-  // user having to type anything. No user bubble is added — only the agent response shows.
-  if (busy) return;
-  if (!await ensureSignedIn()) return;
-  const targetSkill = _pendingRouteTarget || "";
-  _pendingRouteTarget = null;
-  currentAgentBuffer = "";
-  currentAgentMsg = addMsg("agent", "agent", "");
-  currentAgentMsg.classList.add("thinking");
-  currentAgentMsg.setAttribute("data-thinking-label", "Starting up…");
-  setBusy(true);
-  // Re-send the user's original message so the routed skill receives the full
-  // context (customer name, RFP reference, etc.) instead of a bare "proceed".
-  const r = await window.pywebview.api.send(_lastUserPrompt || "proceed", targetSkill);
-  if (!r || !r.ok) {
-    currentAgentMsg.textContent = `error: ${(r && r.error) || "unknown"}`;
-    currentAgentMsg.parentElement.classList.add("error");
-    setBusy(false);
-  }
-}
-
 // ---- agent-event sink (called from Python via evaluate_js) ----
-
-// Skill routed this turn via route_to_skill — set when tool.call fires, populated
-// with the skill name when tool.args arrives. Cleared on turn.complete.
-let _pendingSkillRoute = null;
-// Target skill passed to send() when the auto-trigger fires.
-let _pendingRouteTarget = null;
 
 window.onAgentEvent = function (msg) {
   if (!msg || !msg.event) return;
   const p = msg.payload || {};
   switch (msg.event) {
     case "turn.start":
-      _pendingSkillRoute = null;
       _currentTurnIsAuto = p.auto === true;
       if (_currentTurnIsAuto) {
         setSchedStatus("checking", `Checking ${p.project_label || "project"}…`);
@@ -1544,16 +1512,9 @@ window.onAgentEvent = function (msg) {
       if (currentAgentMsg && currentAgentMsg.classList.contains("thinking")) {
         currentAgentMsg.setAttribute("data-thinking-label", humanizeTool(p.name) + "…");
       }
-      if (p.name === "route_to_skill") _pendingSkillRoute = "";
       break;
     case "tool.args":
       decorateActiveTool(p.args);
-      if (_pendingSkillRoute !== null && p.args) {
-        try {
-          const parsed = typeof p.args === "string" ? JSON.parse(p.args) : p.args;
-          if (parsed && parsed.skill_name) _pendingSkillRoute = parsed.skill_name;
-        } catch (_) {}
-      }
       // When invoke_skill fires, replace the generic label with the friendly skill name.
       if (activeTool && activeTool.name === "invoke_skill" && p.args) {
         try {
@@ -1616,14 +1577,6 @@ window.onAgentEvent = function (msg) {
         shownPhaseCards.clear();
         setBusy(false);
         currentAgentMsg = null;
-        {
-          const routed = _pendingSkillRoute;
-          _pendingSkillRoute = null;
-          if (routed && routed !== "general") {
-            _pendingRouteTarget = routed;
-            setTimeout(_autoTriggerSkill, 400);
-          }
-        }
       }
       break;
     case "turn.error":
@@ -1661,8 +1614,8 @@ window.onAgentEvent = function (msg) {
       if (p.dashboard) renderDashboard(p.dashboard);
       break;
     case "skill.routed":
-      // turn.complete already schedules _autoTriggerSkill when _pendingSkillRoute
-      // is set. This event is informational only — no duplicate schedule.
+      // First-turn skill routing is now server-side; this event remains for
+      // observability only (no client action needed).
       break;
     case "session.forked":
       addMsg("system", "system",

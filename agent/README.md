@@ -72,7 +72,7 @@ All workflow behaviour is declared in **skill manifests** under `agent/skills/{s
 ```
 agent/skills/
 ├── general/
-│   └── SKILL.md          Default front-facing skill (handles greetings, routes via route_to_skill)
+│   └── SKILL.md          Pure fallback chat skill (only used when the server-side first-turn classifier can't match a workflow skill)
 └── sow-response/
     ├── SKILL.md          Orchestrator skill: delegates each phase to a sub-skill via invoke_skill
     ├── charter-draft/    Sub-skill: drafts the project charter

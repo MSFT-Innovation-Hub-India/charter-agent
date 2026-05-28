@@ -313,9 +313,9 @@ Each of these spans days or weeks, involves multiple people, and spans multiple 
 
 ### The routing mechanism
 
-The `general` skill (the default) handles ambiguous or unrecognised prompts. When the model determines the user's intent matches a known skill, it calls `route_to_skill("sow-response")`. The client detects this routing event and automatically re-sends with the target skill, so the transition is invisible to the user — they see one seamless flow, not a "select a skill" step.
+On the first message of a new project, the host runs a **server-side first-turn classifier** — a single short non-tool LLM call through the shared warm Foundry client — that scores the user's text against every registered skill's `description` frontmatter and dispatches directly to the winning workflow skill. The choice is persisted to the project log, so every subsequent turn skips the classifier entirely. The `general` skill is a pure fallback for prompts the classifier can't confidently match.
 
-Skill routing is declared in the `description` frontmatter of each `SKILL.md` — plain English describing the trigger phrases. No code changes when a new skill is added; the general skill's routing logic reads descriptions at runtime.
+Skill routing is therefore declared in the `description` frontmatter of each `SKILL.md` — plain English describing what the skill does and the trigger phrases for when to use it. No code changes when a new skill is added, no edits to `general`, and no client-side auto-trigger logic: the new skill is reachable as soon as its `SKILL.md` is on disk.
 
 ---
 
