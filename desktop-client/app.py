@@ -566,8 +566,12 @@ def _dashboard_from_log(log: dict[str, Any]) -> dict[str, Any]:
         subs = t.get("submissions", [])
         if subs:
             last_signal = subs[-1].get("summary") or "reply received"
-        elif (t.get("kickoff_sent") or {}).get("at"):
-            last_signal = f"kicked off via {t['kickoff_sent']['channel']}"
+        else:
+            ks = t.get("kickoff_sent")
+            if isinstance(ks, dict) and ks.get("at"):
+                last_signal = f"kicked off via {ks.get('channel', 'unknown')}"
+            elif ks is True:
+                last_signal = "kicked off"
         sections.append({
             "task_id": t.get("task_id"),
             "title": t.get("title"),
@@ -587,16 +591,18 @@ def _dashboard_from_log(log: dict[str, Any]) -> dict[str, Any]:
                 "title": t.get("task_id"),
                 "body": f"{t.get('owner_display_name', t.get('owner_upn'))} is past due.",
             })
-    order = (log.get("consolidation_rules") or {}).get("section_order") or []
-    if order:
-        idx = {tid: i for i, tid in enumerate(order)}
+    charter_order = [s.get("id") for s in (log.get("charter") or {}).get("sections", [])]
+    if charter_order:
+        idx = {tid: i for i, tid in enumerate(charter_order)}
         sections.sort(key=lambda s: idx.get(s["task_id"], len(idx)))
     submitted = sum(1 for t in tasks if t.get("status") in submitted_states)
+    customer = log.get("customer_name") or (log.get("rfp") or {}).get("customer_name", "")
     return {
         "kind": "dashboard",
         "project": log.get("project_id"),
-        "customer": log.get("customer_name"),
+        "customer": customer,
         "skill": log.get("skill"),
+        "phase": log.get("phase"),
         "status": log.get("status"),
         "summary": "",
         "due": earliest_unmet_due or "",
@@ -1243,14 +1249,7 @@ class Bridge:
             logger.info("[bridge] clearing stale prev_resp after %ds idle", int(time.time() - self._last_response_at))
             self.previous_response_id = None
 
-        # skill override: caller (e.g. auto-trigger after routing) can supply the
-        # target skill directly so the preamble is correct before the project record
-        # is updated from disk (which only works in local mode).
-        effective_skill = (skill.strip() if skill else "") or (self._current.get("skill") or "general")
-        if skill.strip() and skill.strip() != self._current.get("skill"):
-            self._current["skill"] = skill.strip()
-            _save_projects(self._projects_data)
-        preamble = f"[charter-agent-context: project_id={pid} is_new={'true' if is_new else 'false'} skill={effective_skill}]\n"
+        preamble = f"[charter-agent-context: project_id={pid} is_new={'true' if is_new else 'false'}]\n"
         threading.Thread(target=self._run_turn, args=(prompt, preamble + prompt, url), daemon=True).start()
         return {"ok": True}
 
@@ -1331,11 +1330,7 @@ class Bridge:
         _ctx.setdefault("prev_resp_id", None)
 
         prev_snap = dict(self._section_snapshots.get(pid, {}))
-        effective_skill = _ctx["project_dict"].get("skill") or "general"
-        preamble = (
-            f"[charter-agent-context: project_id={pid} "
-            f"is_new=false skill={effective_skill}]\n"
-        )
+        preamble = f"[charter-agent-context: project_id={pid} is_new=false]\n"
         wire_prompt = preamble + _POLL_CHECK_PROMPT
         threading.Thread(
             target=self._run_turn,
@@ -1417,7 +1412,8 @@ class Bridge:
                     _ctx=_ctx,
                 )
             except Exception as e:  # noqa: BLE001
-                self._emit("turn.error", {"error": str(e), "auto": auto})
+                logger.error("[bridge] unhandled turn exception: %s", e, exc_info=True)
+                self._emit("turn.error", {"error": "Something went wrong — please try again.", "auto": auto})
             finally:
                 if done_event:
                     done_event.set()
@@ -1477,8 +1473,8 @@ class Bridge:
                 logger.debug("[bridge] <- status=%d ct=%s", resp.status_code, resp.headers.get("content-type"))
                 if resp.status_code >= 400:
                     err = resp.read().decode("utf-8", errors="replace")
-                    logger.debug("[bridge] error body: %s", err[:2000])
-                    self._emit("turn.error", {"error": f"HTTP {resp.status_code}: {err[:2000]}"})
+                    logger.error("[bridge] HTTP error: status=%d body=%s", resp.status_code, err[:2000])
+                    self._emit("turn.error", {"error": "Something went wrong — please try again."})
                     return
                 event_count = 0
                 for evt in _iter_sse_events(resp):
@@ -1579,7 +1575,8 @@ class Bridge:
                         continue
 
                     if etype and (etype.endswith(".failed") or etype.endswith(".error")):
-                        self._emit("turn.error", {"error": f"{etype}: {json.dumps(data)[:1500]}"})
+                        logger.error("[bridge] agent turn failed: etype=%s payload=%s", etype, json.dumps(data)[:2000])
+                        self._emit("turn.error", {"error": "Something went wrong — please try again."})
                         return
 
         logger.info("[bridge] stream done: events=%d response_id=%s text_parts=%d consent=%s", event_count, response_id, len(completed_text_parts), consent_payload is not None)

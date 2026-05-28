@@ -1,4 +1,5 @@
 pywebview>=5.0
+pyyaml>=6.0
 httpx>=0.27
 azure-identity>=1.17
 # Optional but strongly preferred on Windows: enables the native WAM account

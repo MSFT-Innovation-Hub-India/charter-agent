@@ -32,6 +32,7 @@ import httpx
 
 from ..state import home_dir
 from . import skill_loader
+from .orchestration_tools import ORCHESTRATION_TOOLS
 from .state_tools import STATE_TOOLS
 
 _chat_client: Any | None = None
@@ -117,24 +118,40 @@ def _build_credential() -> Any:
         TokenCachePersistenceOptions,
     )
 
+    tenant_id: str | None = os.environ.get("AZURE_TENANT_ID") or None
+
     record_path = home_dir() / ".msal-cache" / "auth_record.json"
     record_path.parent.mkdir(parents=True, exist_ok=True)
+    # Discard a stale cached auth record if its tenant doesn't match the
+    # configured AZURE_TENANT_ID — avoids "tenant mismatch" 400 errors when
+    # the developer has multiple Azure identities in their credential chain.
     auth_record: Any = None
     if record_path.exists():
         try:
-            auth_record = AuthenticationRecord.deserialize(record_path.read_text(encoding="utf-8"))
+            raw = record_path.read_text(encoding="utf-8")
+            candidate = AuthenticationRecord.deserialize(raw)
+            import json as _json
+            cached_tenant = (_json.loads(raw) or {}).get("tenantId", "")
+            if tenant_id and cached_tenant and cached_tenant != tenant_id:
+                record_path.unlink(missing_ok=True)
+            else:
+                auth_record = candidate
         except Exception:
             auth_record = None
 
+    interactive_kwargs: dict[str, Any] = {"authentication_record": auth_record}
+    if tenant_id:
+        interactive_kwargs["tenant_id"] = tenant_id
     try:
         cache_opts = TokenCachePersistenceOptions(name="charter-agent", allow_unencrypted_storage=True)
         interactive = InteractiveBrowserCredential(
             cache_persistence_options=cache_opts,
-            authentication_record=auth_record,
+            **interactive_kwargs,
         )
     except Exception:
-        interactive = InteractiveBrowserCredential(authentication_record=auth_record)
+        interactive = InteractiveBrowserCredential(**interactive_kwargs)
 
+    # DefaultAzureCredential reads AZURE_TENANT_ID from the environment automatically.
     return ChainedTokenCredential(DefaultAzureCredential(), interactive)
 
 
@@ -209,18 +226,23 @@ def bootstrap() -> None:
     (home_dir() / "agent_session").mkdir(parents=True, exist_ok=True)
 
     # Register shared in-process tools, then build one warm Agent per bundle.
-    skill_loader.register_tools(list(STATE_TOOLS))
+    skill_loader.register_tools(list(STATE_TOOLS) + list(ORCHESTRATION_TOOLS))
     bundles = skill_loader.load_bundles()
     _agents.clear()
     for name, bundle in bundles.items():
         _agents[name] = _build_agent(bundle)
 
 
-def get_chat_agent() -> Any:
-    """Backward-compatible accessor returning the warm `FoundryChatClient`."""
+def get_chat_client() -> Any:
+    """Return the warm `FoundryChatClient` shared across all agents."""
     if _chat_client is None:
         raise RuntimeError("foundry_host.bootstrap() must be called first.")
     return _chat_client
+
+
+def get_chat_agent() -> Any:
+    """Backward-compatible alias for `get_chat_client()`."""
+    return get_chat_client()
 
 
 def get_toolbox() -> Any:

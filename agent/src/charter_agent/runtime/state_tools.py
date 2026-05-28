@@ -91,6 +91,27 @@ def state_read_text(path: str) -> str:
 
 
 @tool
+def state_patch_json(path: str, patch: dict[str, Any]) -> str:
+    """Merge top-level keys into an existing JSON file without overwriting unrelated fields.
+
+    Use this for all project_log updates. Each skill owns specific top-level
+    keys (e.g. `sow-rfp-search` owns `rfp` and `phase`). Patching instead of
+    rewriting ensures that keys written by earlier skills are never accidentally
+    dropped.
+
+    If the file does not exist it is created from `patch`. Nested objects
+    (e.g. `tasks`) are replaced in full when present in `patch` — read and
+    reconstruct the nested object yourself if you need fine-grained task updates.
+
+    Args:
+        path: Relative path under `$HOME` (e.g. "projects/p-xxx/project_log.json").
+        patch: Dict of top-level keys to merge. Only keys present here are touched.
+    """
+    p = state.patch_json(path, patch)
+    return f"patched {p.relative_to(state.home_dir()).as_posix()} ({len(patch)} key(s))"
+
+
+@tool
 def state_write_json(path: str, obj: dict[str, Any]) -> str:
     """Atomically write a JSON file under the session's `$HOME` directory.
 
@@ -164,10 +185,61 @@ def log_workflow_step(kind: str, summary: str, ref: str = "") -> str:
     return "logged"
 
 
+@tool
+def project_read_log() -> dict[str, Any]:
+    """Read the active project's project_log.json.
+
+    Use this at the start of every skill turn. Returns the full log dict.
+    Raises FileNotFoundError (as a string error) if the project has not been
+    initialised yet — in that case the skill should create the log with
+    `project_write_log`.
+    """
+    path = state.project_path("project_log.json")
+    try:
+        return state.read_json(path)
+    except FileNotFoundError:
+        return {}
+
+
+@tool
+def project_patch_log(patch: dict[str, Any]) -> str:
+    """Merge top-level keys into the active project's project_log.json.
+
+    Each skill owns specific top-level keys. Patching means earlier skills'
+    keys are never accidentally overwritten. Use this for every state update
+    except the very first initialisation (use `project_write_log` for that).
+
+    Args:
+        patch: Dict of top-level keys to merge in. Only these keys are touched.
+    """
+    path = state.project_path("project_log.json")
+    state.patch_json(path, patch)
+    return f"patched project_log.json ({len(patch)} key(s): {list(patch.keys())})"
+
+
+@tool
+def project_write_log(log: dict[str, Any]) -> str:
+    """Write the full project_log.json for the active project (initial creation only).
+
+    Use only when creating a brand-new project log. For all subsequent updates
+    use `project_patch_log` so earlier fields are preserved.
+
+    Args:
+        log: The full log object to write.
+    """
+    path = state.project_path("project_log.json")
+    state.write_json(path, log)
+    return "wrote project_log.json"
+
+
 STATE_TOOLS: list[Any] = [
     route_to_skill,
+    project_read_log,
+    project_patch_log,
+    project_write_log,
     state_write_text,
     state_read_text,
+    state_patch_json,
     state_write_json,
     state_read_json,
     state_list_files,

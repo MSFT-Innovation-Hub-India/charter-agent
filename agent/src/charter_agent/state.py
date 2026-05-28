@@ -183,6 +183,24 @@ def write_json(rel_path: str, obj: Any) -> Path:
     return p
 
 
+def patch_json(rel_path: str, patch: dict[str, Any]) -> Path:
+    """Merge top-level keys from `patch` into an existing JSON file.
+
+    Reads the current file (or starts from `{}` if it doesn't exist), applies
+    `patch` as a shallow merge at the top level, then atomically rewrites.
+    Nested objects are replaced, not recursively merged — callers that need
+    deep merging should read, modify, and write the nested object themselves.
+    """
+    try:
+        existing: dict[str, Any] = read_json(rel_path)
+        if not isinstance(existing, dict):
+            existing = {}
+    except FileNotFoundError:
+        existing = {}
+    existing.update(patch)
+    return write_json(rel_path, existing)
+
+
 # --- ndjson (append-only) -------------------------------------------------
 
 

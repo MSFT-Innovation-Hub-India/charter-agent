@@ -1,4 +1,9 @@
-"""Load agentskills.io-conformant skills from `agent/skills/*/SKILL.md`.
+"""Load agentskills.io-conformant skills from `agent/skills/**/SKILL.md`.
+
+Skills may live at any depth under `agent/skills/`. Top-level skills
+(e.g. `general/SKILL.md`) and phase skills nested under a parent skill
+(e.g. `sow-response/rfp-search/SKILL.md`) are treated identically — the
+`name:` frontmatter field is the registered key, not the directory name.
 
 Each skill is parsed into a `Skill` manifest. A `SkillBundle` pairs the
 manifest with the concrete tool callables it is allowed to use, resolved
@@ -98,8 +103,6 @@ def _parse(skill_md: Path) -> Skill:
     description = meta.get("description")
     if not isinstance(name, str) or not _NAME_RE.match(name):
         raise ValueError(f"{skill_md}: invalid `name` (must be kebab-case, 1–64 chars)")
-    if name != skill_md.parent.name:
-        raise ValueError(f"{skill_md}: `name` ({name!r}) must equal parent dir name")
     if not isinstance(description, str) or not (1 <= len(description) <= 1024):
         raise ValueError(f"{skill_md}: `description` required, 1–1024 chars")
 
@@ -140,6 +143,17 @@ def _looks_like_inprocess(name: str) -> bool:
 
 def _build_bundle(skill: Skill) -> SkillBundle:
     domain_tools = _load_skill_domain_tools(skill.name)
+    # Phase skills nested under a parent (e.g. sow-response/reply-poll/) also
+    # inherit the parent skill's domain tools so they can use shared tools like
+    # dashboard_payload without duplicating the Python module.
+    _root = skills_dir().resolve()
+    if skill.path.parent.parent.resolve() != _root:
+        parent_skill_name = skill.path.parent.parent.name
+        existing_names = {_tool_name(fn) for fn in domain_tools}
+        for fn in _load_skill_domain_tools(parent_skill_name):
+            if _tool_name(fn) not in existing_names:
+                domain_tools.append(fn)
+                existing_names.add(_tool_name(fn))
     available: dict[str, Any] = dict(_TOOL_REGISTRY)
     for fn in domain_tools:
         available[_tool_name(fn)] = fn
@@ -198,8 +212,18 @@ def load_all() -> list[Skill]:
     if not root.exists():
         return []
     skills: list[Skill] = []
-    for skill_md in sorted(root.glob("*/SKILL.md")):
-        skill = _parse(skill_md)
+    for skill_md in sorted(root.glob("**/SKILL.md")):
+        try:
+            skill = _parse(skill_md)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("skill_loader: skipping %s (%s)", skill_md, exc)
+            continue
+        if skill.name in _skill_cache:
+            log.warning(
+                "skill_loader: duplicate name %r at %s (already loaded from %s); skipping",
+                skill.name, skill_md, _skill_cache[skill.name].path,
+            )
+            continue
         _skill_cache[skill.name] = skill
         skills.append(skill)
     return skills

@@ -458,6 +458,18 @@
   .msg.agent .bubble pre code { background: transparent; padding: 0; }
   .msg.agent .bubble strong { font-weight: 600; }
   .msg.agent .bubble em { font-style: italic; }
+  .msg.agent .bubble table {
+    border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px;
+  }
+  .msg.agent .bubble th,
+  .msg.agent .bubble td {
+    border: 1px solid var(--line); padding: 6px 10px; text-align: left;
+    vertical-align: top;
+  }
+  .msg.agent .bubble th {
+    background: var(--line-soft); font-weight: 600; white-space: nowrap;
+  }
+  .msg.agent .bubble tr:nth-child(even) td { background: #fafbfc; }
 
   /* Thinking indicator — spinner + text shimmer, no coloured background */
   .bubble.thinking {
@@ -951,24 +963,43 @@ function mdToHtml(src) {
   text = text.replace(/^### (.+)$/gm, "<h3>$1</h3>");
   text = text.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   text = text.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-  // Lists: collapse consecutive bullet/ordered lines into <ul>/<ol>.
+  // Table builder: rows[] are already HTML-escaped `| … |` strings.
+  // Requires a separator row (|---|) as the second row to qualify as a table.
+  function buildTable(rows) {
+    if (rows.length < 2) return "<p>" + rows.join("<br>") + "</p>";
+    const sep = rows[1];
+    if (!/^\|[-:| ]+\|$/.test(sep)) return "<p>" + rows.join("<br>") + "</p>";
+    const cells = r => r.replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+    let h = "<table><thead><tr>" + cells(rows[0]).map(c => `<th>${c}</th>`).join("") + "</tr></thead><tbody>";
+    for (const row of rows.slice(2)) {
+      h += "<tr>" + cells(row).map(c => `<td>${c}</td>`).join("") + "</tr>";
+    }
+    return h + "</tbody></table>";
+  }
+  // Lists/tables: collapse consecutive rows into <ul>/<ol>/<table>.
   const lines = text.split("\n");
   const out = [];
   let listType = null;          // 'ul' | 'ol' | null
   let para = [];
+  let tableRows = [];           // accumulate consecutive table-row lines
   function flushPara() {
-    if (para.length) {
-      out.push("<p>" + para.join("<br>") + "</p>");
-      para = [];
-    }
+    if (para.length) { out.push("<p>" + para.join("<br>") + "</p>"); para = []; }
   }
   function flushList() {
-    if (listType) {
-      out.push(`</${listType}>`);
-      listType = null;
-    }
+    if (listType) { out.push(`</${listType}>`); listType = null; }
+  }
+  function flushTable() {
+    if (tableRows.length) { out.push(buildTable(tableRows)); tableRows = []; }
   }
   for (const line of lines) {
+    const trimmed = line.trim();
+    // Table row: starts and ends with | and is not just `|`
+    if (trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length > 1) {
+      flushPara(); flushList();
+      tableRows.push(trimmed);
+      continue;
+    }
+    flushTable(); // end any open table before processing other line types
     const bullet = line.match(/^\s*[-*]\s+(.+)$/);
     const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
     if (bullet) {
@@ -979,7 +1010,7 @@ function mdToHtml(src) {
       flushPara();
       if (listType !== "ol") { flushList(); out.push("<ol>"); listType = "ol"; }
       out.push("<li>" + ordered[1] + "</li>");
-    } else if (line.trim() === "") {
+    } else if (trimmed === "") {
       flushList();
       flushPara();
     } else if (/^<h\d>/.test(line)) {
@@ -993,6 +1024,7 @@ function mdToHtml(src) {
   }
   flushList();
   flushPara();
+  flushTable();
   let html = out.join("\n");
   // Inline: **bold**, *italic*, `code`.
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
@@ -1097,6 +1129,20 @@ const TOOL_LABELS = {
   state_list_files: "Listing project files",
   state_file_exists: "Checking project file",
   log_workflow_step: "Logging activity",
+  project_read_log: "Reading project state",
+  project_patch_log: "Updating project state",
+  project_write_log: "Saving project state",
+  invoke_skill: "Running workflow step",
+};
+
+// Friendly progress labels shown while each SOW sub-skill is running.
+// Keyed by skill name; updated when tool.args fires with skill_name.
+const SKILL_LABELS = {
+  "sow-rfp-search":      "Searching for RFP",
+  "sow-charter-draft":   "Drafting SOW charter",
+  "sow-kickoff-extract": "Finding kickoff meeting notes",
+  "sow-task-allocate":   "Sending kickoff messages",
+  "sow-reply-poll":      "Checking for replies",
 };
 
 const SERVICE_LABELS = {
@@ -1508,6 +1554,35 @@ window.onAgentEvent = function (msg) {
           if (parsed && parsed.skill_name) _pendingSkillRoute = parsed.skill_name;
         } catch (_) {}
       }
+      // When invoke_skill fires, replace the generic label with the friendly skill name.
+      if (activeTool && activeTool.name === "invoke_skill" && p.args) {
+        try {
+          const parsed = typeof p.args === "string" ? JSON.parse(p.args) : p.args;
+          const friendlyLabel = parsed && parsed.skill_name && SKILL_LABELS[parsed.skill_name];
+          if (friendlyLabel) {
+            const nameEl = activeTool.node && activeTool.node.querySelector(".name");
+            if (nameEl) nameEl.textContent = friendlyLabel;
+            const argsEl = activeTool.node && activeTool.node.querySelector(".args");
+            if (argsEl) argsEl.remove();
+            if (currentAgentMsg && currentAgentMsg.classList.contains("thinking")) {
+              currentAgentMsg.setAttribute("data-thinking-label", friendlyLabel + "…");
+            }
+          }
+        } catch (_) {}
+      }
+      // When log_workflow_step fires, show the summary text instead of "Logging activity".
+      if (activeTool && activeTool.name === "log_workflow_step" && p.args) {
+        try {
+          const parsed = typeof p.args === "string" ? JSON.parse(p.args) : p.args;
+          const summary = parsed && parsed.summary;
+          if (summary) {
+            const nameEl = activeTool.node && activeTool.node.querySelector(".name");
+            if (nameEl) nameEl.textContent = summary;
+            const argsEl = activeTool.node && activeTool.node.querySelector(".args");
+            if (argsEl) argsEl.remove();
+          }
+        } catch (_) {}
+      }
       break;
     case "text.delta":
       finishActiveTool("done");
@@ -1560,10 +1635,10 @@ window.onAgentEvent = function (msg) {
         if (currentAgentMsg) {
           currentAgentMsg.classList.remove("thinking");
           currentAgentMsg.removeAttribute("data-thinking-label");
-          currentAgentMsg.textContent = `error: ${p.error || "unknown"}`;
+          currentAgentMsg.textContent = p.error || "Something went wrong — please try again.";
           currentAgentMsg.parentElement.classList.add("error");
         } else {
-          addMsg("error", "system", p.error || "unknown");
+          addMsg("error", "system", p.error || "Something went wrong — please try again.");
         }
         shownPhaseCards.clear();
         setBusy(false);
