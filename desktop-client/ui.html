@@ -55,23 +55,6 @@
   .auth-pill.ok { background: #dafbe1; color: #1a7f37; }
   .auth-pill.bad { background: #ffebe9; color: #cf222e; }
 
-  /* Service-status pills (Foundry, WorkIQ) — light up when used this turn */
-  .svc-pills { display: flex; gap: 6px; align-items: center; margin-right: 8px; }
-  .svc-pill {
-    font-size: 11px; padding: 3px 9px; border-radius: 999px;
-    background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.55);
-    border: 1px solid rgba(255,255,255,0.12);
-    display: inline-flex; align-items: center; gap: 5px;
-  }
-  .svc-pill::before {
-    content: ""; width: 6px; height: 6px; border-radius: 50%;
-    background: rgba(255,255,255,0.25); display: inline-block;
-  }
-  .svc-pill.live { background: rgba(26,127,55,0.25); color: #4ac26b; border-color: rgba(74,194,107,0.3); }
-  .svc-pill.live::before { background: #4ac26b; box-shadow: 0 0 5px rgba(74,194,107,0.7); }
-  .svc-pill.warm { background: rgba(212,167,44,0.2); color: #d4a72c; border-color: rgba(212,167,44,0.3); }
-  .svc-pill.warm::before { background: #d4a72c; }
-
   /* Inline phase cards in the chat stream — historical "this happened"
      markers, deliberately muted so they don't read as live activity. */
   .phase-card {
@@ -599,10 +582,6 @@
     <h1>Project Charter</h1>
   </div>
   <div class="controls">
-    <div class="svc-pills" id="svcPills">
-      <span class="svc-pill" id="svcFoundry" title="Foundry / host model">Foundry</span>
-      <span class="svc-pill" id="svcWorkIQ" title="WorkIQ Toolbox">WorkIQ</span>
-    </div>
     <label class="meta" for="modeSelect" style="text-transform:uppercase;letter-spacing:0.04em;font-size:11px;color:rgba(255,255,255,0.4);">Run against</label>
     <select id="modeSelect" class="btn secondary" style="padding:5px 8px;font-size:12.5px;background:#1e2130;color:rgba(255,255,255,0.8);border-color:rgba(255,255,255,0.15);">
 
@@ -709,8 +688,6 @@ const endpointMeta = $("endpointMeta");
 const modeSelect = $("modeSelect");
 const activityList = $("activity");
 const logsList = $("logs");
-const svcFoundry = $("svcFoundry");
-const svcWorkIQ = $("svcWorkIQ");
 
 let signedIn = false;
 let currentUserUpn = null;
@@ -860,8 +837,6 @@ function clearActivity() {
   logsList.innerHTML = `<div class="activity-empty">No log entries yet.</div>`;
   activeTool = null;
   shownPhaseCards.clear();
-  setServicePill(svcFoundry, "");
-  setServicePill(svcWorkIQ, "");
 }
 
 // Phase-card definitions — milestone tool calls that get rendered inline in
@@ -1036,23 +1011,6 @@ function mdToHtml(src) {
 function renderAgentText(node, raw) {
   if (!node) return;
   node.innerHTML = mdToHtml(stripDashboardJson(raw));
-}
-
-function setServicePill(pill, state) {
-  if (!pill) return;
-  pill.classList.remove("live", "warm");
-  if (state) pill.classList.add(state);
-}
-
-function markServiceForTool(toolName) {
-  if (!toolName) return;
-  if (toolName.startsWith("WorkIQ")) {
-    setServicePill(svcWorkIQ, "live");
-    setServicePill(svcFoundry, "live");
-  } else {
-    // In-process @tool — the host model executed it, so Foundry is live.
-    setServicePill(svcFoundry, "live");
-  }
 }
 
 function tsNow() {
@@ -1502,12 +1460,10 @@ window.onAgentEvent = function (msg) {
       break;
     case "session.update":
       setSession(p.session_id);
-      setServicePill(svcFoundry, "warm");
       break;
     case "tool.call":
       finishActiveTool("done");
       activeTool = addActivity(p.name);
-      markServiceForTool(p.name);
       renderPhaseCard(p.name);
       if (currentAgentMsg && currentAgentMsg.classList.contains("thinking")) {
         currentAgentMsg.setAttribute("data-thinking-label", humanizeTool(p.name) + "…");

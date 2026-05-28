@@ -373,16 +373,6 @@ Shows whether the current project has a live Foundry session:
 
 The session ID is displayed in the header as `session: ses-abc123` and updated whenever `response.created` or `response.completed` carries a new ID.
 
-### WorkIQ service pills
-
-The Activity panel shows per-tool service indicators. When a tool call fires, the client maps the tool name (e.g., `WorkIQMail2___SendEmailWithAttachments`) to a service label (`Mail`, `Teams`, `Calendar`, etc.) and lights up the corresponding pill. Status transitions:
-
-- **calling** (animated) — tool call in progress
-- **done** — tool returned successfully
-- **error** — tool failed or returned an error event
-
-This gives immediate visual feedback on which M365 services are being accessed during a turn.
-
 ### Endpoint status
 
 The header shows `endpoint: hosted → https://<agent>/responses` (or `local → http://localhost:8088/responses`). The mode dropdown disables options whose endpoint is not configured.
