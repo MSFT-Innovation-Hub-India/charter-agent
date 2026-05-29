@@ -244,6 +244,139 @@ The class is `agent_framework.Agent` — there is no `ChatAgent` at the `agent_f
 
 If a future need genuinely demands a typed envelope (e.g. a client wants `dashboard` payloads with strict shape), express it as a new MAF tool on the warm `Agent`, not as a parallel protocol surface.
 
+### 8.1 Wire protocol: session ids, response ids, and the request/response shape
+
+This section documents the exact bytes on the wire between the desktop client and the Foundry-hosted agent's `/responses` endpoint, the two id fields that govern continuity, and where the parsing lives in the client.
+
+**The protocol is the OpenAI Responses API.** This is not negotiable and is verified in three places in the code:
+
+- The endpoint path itself: `runtime/foundry_host.py` and the client's [`_resolve_hosted_url`](../desktop-client/app.py#L177-L187) construct `{FOUNDRY_PROJECT_ENDPOINT}/agents/<agent-name>/endpoint/protocols/openai/responses?api-version=v1` — the `/protocols/openai/responses` suffix is Foundry's declaration that this endpoint speaks the OpenAI Responses dialect.
+- The server is `agent-framework-foundry-hosting.ResponsesHostServer` (pinned in [agent/pyproject.toml](../agent/pyproject.toml)), which depends on `azure-ai-agentserver-responses`. Both names are explicit about the protocol.
+- The client's SSE consumer in [`_post_one`](../desktop-client/app.py#L1421) handles only the canonical Responses event types: `response.created`, `response.output_item.added`, `response.output_text.delta`, `response.function_call_arguments.delta`, `response.function_call_arguments.done`, `response.completed`, and the platform-specific `oauth_consent_request`. No custom event types, no custom envelope.
+
+**Two ids, two different jobs.** Every turn carries up to two identifiers, and they pin different things:
+
+| Field | Carried in | Pins | Lifetime | Lost when |
+|---|---|---|---|---|
+| `agent_session_id` | Request body (top-level) **and** mirrored to header `x-agent-chat-isolation-key` | The persistent Foundry microVM and its `$HOME` (`project_charter.md`, `project_log.json`, `activity.json`, `agent_session/<id>.json`) | Up to 30 days | Foundry idle-reap or platform GC |
+| `previous_response_id` | Request body (top-level) | The Responses host's in-memory transcript chain (message history only) | Process lifetime of the agent container | Container restart (deploy, scale-in, crash) |
+
+**The client mints the session id, not the server.** A new project's first request is **not** a "get a session id" handshake — the desktop client uses `project_id` as the `agent_session_id` and sends it on call 1. Foundry provisions a fresh microVM bound to that id and echoes it back in `response.created`. If the server ever returns a *different* `agent_session_id` than the one sent, that is a **session fork**: Foundry rejected the request (typically because `previous_response_id` was stale and didn't match the session), provisioned a new VM, and the original `$HOME` is orphaned. The client detects this in `_post_one` and emits `session.forked` rather than silently adopting the new id ([app.py:1497–1517](../desktop-client/app.py#L1497-L1517)).
+
+#### Call 1 — new project (no `previous_response_id` yet)
+
+```http
+POST {FOUNDRY_PROJECT_ENDPOINT}/agents/charter-agent/endpoint/protocols/openai/responses?api-version=v1
+Authorization: Bearer <user-token>           # MSAL public client, scope https://ai.azure.com/.default
+Content-Type: application/json
+Accept: text/event-stream
+x-agent-chat-isolation-key: <project_id>     # mirrors agent_session_id
+
+{
+  "input": "[charter-agent-context: project_id=<pid> is_new=true skill=sow-response]\n<user message>",
+  "stream": true,
+  "agent_session_id": "<project_id>"
+}
+```
+
+SSE response — first event carries the session id (echoed) and the new response id:
+
+```
+event: response.created
+data: {"response": {"id": "resp_abc123", "agent_session_id": "<project_id>", ...}}
+
+event: response.output_text.delta
+data: {"delta": "Looking up the RFP in your mail…"}
+
+…
+
+event: response.completed
+data: {"response": {"id": "resp_abc123", "agent_session_id": "<project_id>", "output": [...]}}
+```
+
+#### Call 2..N — ongoing turns (same microVM, transcript resumed)
+
+```http
+POST .../responses?api-version=v1
+Authorization: Bearer <user-token>
+Content-Type: application/json
+Accept: text/event-stream
+x-agent-chat-isolation-key: <project_id>
+
+{
+  "input": "<next user message>",
+  "stream": true,
+  "agent_session_id": "<project_id>",        # same id → same microVM → same $HOME
+  "previous_response_id": "resp_abc123"      # chains to the prior turn's transcript
+}
+```
+
+#### Where this lives in the client
+
+| Concern | Function | File |
+|---|---|---|
+| Build the URL | `_resolve_hosted_url` | [`desktop-client/app.py`](../desktop-client/app.py#L177-L187) |
+| Build the request body + headers, POST, stream the response | `BridgeApi._post_one` | [`desktop-client/app.py`](../desktop-client/app.py#L1421) |
+| SSE frame parser (event name + data lines → `{event, data}`) | `_iter_sse_events` | [`desktop-client/app.py`](../desktop-client/app.py#L213-L233) |
+| Per-project pointer store (last `session_id`, last `previous_response_id`) | `~/.charter-agent/projects.json` via `_save_projects` / `_load_projects` | [`desktop-client/app.py`](../desktop-client/app.py) |
+
+Body construction in `_post_one` is the minimal contract — only set fields when they exist, never send a null id:
+
+```python
+body: dict[str, Any] = {"input": prompt, "stream": True}
+if _session_id:
+    body["agent_session_id"] = _session_id
+if previous_response_id:
+    body["previous_response_id"] = previous_response_id
+headers = {
+    "Authorization": f"Bearer {self.token}",
+    "Content-Type": "application/json",
+    "Accept": "text/event-stream",
+}
+if _session_id:
+    headers["x-agent-chat-isolation-key"] = _session_id
+```
+
+#### How `_post_one` parses the stream
+
+`_post_one` opens an `httpx.Client.stream("POST", url, json=body, headers=headers)`, feeds the response to `_iter_sse_events`, then switches on `data["type"]` (falling back to the SSE `event:` line). The handled events:
+
+- `response.created` — capture `response.id` into `response_id`; capture `agent_session_id`. If it differs from what was sent, emit `session.forked`; persist whatever the server reports as authoritative for this project via `_save_projects`. Emit `session.update` to the UI.
+- `response.output_item.added` — if the item is a `function_call` / `tool_call`, remember the tool name and emit `tool.call`.
+- `response.function_call_arguments.delta` / `.done` — accumulate the JSON-encoded tool arguments. On `.done`, emit `tool.args`. If the tool is `publish_view`, parse the arguments and stash the dashboard payload (the UI renders it once the turn completes).
+- `response.output_text.delta` — forward each `delta` to the UI as `text.delta` so the chat bubble streams.
+- `response.completed` — re-check `agent_session_id` for forks; flatten `response.output[*].content[*].text` into `completed_text_parts` for the final message.
+- Any event whose name contains `consent` — stash as `consent_payload`; after the stream ends, open the consent URL in a browser and re-POST the same prompt with `previous_response_id=<this response_id>` to resume.
+- Any event ending in `.failed` / `.error` — emit `turn.error` and stop.
+
+After the stream closes, `_post_one` persists `response_id` as the project's new `previous_response_id` and emits `turn.complete` with `{response_id, session_id, project_id, text, dashboard}`.
+
+#### The silent empty-completion failure mode (and the only correct recovery)
+
+When `previous_response_id` references a transcript that has rolled (container restart since the chain was minted), the hosted endpoint returns **200 OK** with `response.created` → `response.in_progress` → `response.completed` and **zero** `output_text` / `function_call` events. No error, no exception — the UI looks hung. Easy to misdiagnose as auth or network failure.
+
+The recovery, implemented in [`_post_one`](../desktop-client/app.py#L1591-L1614), is to retry the same prompt with `previous_response_id=None` **but the same `agent_session_id`**:
+
+```python
+if (
+    previous_response_id
+    and not consent_payload
+    and not final_text
+    and event_count <= 4
+):
+    if _p.get("previous_response_id") is not None:
+        _p["previous_response_id"] = None
+        _save_projects(self._projects_data)
+    self._post_one(prompt, url=url, previous_response_id=None, ...)
+    return
+```
+
+Clearing `agent_session_id` in the retry instead would orphan the user's microVM — the entire sandbox (charter, project log, activity) gets stranded and the next turn looks like a new project.
+
+#### Server-side: no session-handling code
+
+The Foundry platform mounts the right per-session `$HOME` before any of our code runs. `runtime/state_tools.py` just reads `state.home_dir()`; nothing in `runtime/` looks at `agent_session_id` directly. The client is solely responsible for sending the right pair of ids on every POST.
+
 ---
 
 ## 9. Observability & audit
