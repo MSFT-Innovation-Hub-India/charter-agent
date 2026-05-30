@@ -27,22 +27,40 @@ A native Windows desktop application that provides the user-facing surface for t
 
 ```
 desktop-client/
-├── app.py           Python process: auth, SSE streaming, Bridge (Python ↔ JS), system tray
-├── tray_icon.py     Win32 system-tray icon (ctypes — no third-party tray library)
-├── ui.html          Single-file UI: CSS design system, HTML, JavaScript SPA
+├── app.py               Thin entry point: argparse, single-instance lock, window/bridge/poller/tray wiring
+├── charter_client/      The client package — all logic lives here
+│   ├── __init__.py
+│   ├── config.py        Env loading (.env), path anchors, constants, logger, SDK/broker capability guards
+│   ├── protocol.py      SSE parsing + event normalisation (raw-httpx and SDK events → one dict shape)
+│   ├── auth.py          MSAL/WAM sign-in, JWT decode, AuthenticationRecord, _BridgeTokenCredential
+│   ├── storage.py       projects.json, transcripts, view cache, disk-state readers
+│   ├── notifications.py Windows toast helper
+│   ├── poller.py        AutoPoller — opt-in background check scheduler
+│   ├── bridge.py        The Bridge class: both transports (SDK + legacy raw-httpx) + the js_api surface
+│   └── tray.py          Single-instance mutex + Win32 system-tray wiring
+├── tray_icon.py         Win32 system-tray icon (ctypes — no third-party tray library)
+├── ui.html              UI markup shell — links assets/app.css and assets/app.js
 ├── assets/
+│   ├── app.css          The UI design system / stylesheet (extracted from ui.html)
+│   ├── app.js           The UI SPA logic (extracted from ui.html)
 │   ├── app_icon.png
 │   └── app_icon.ico
 ├── scripts/
-│   ├── start.ps1    Start the app in the background (no console window)
-│   ├── stop.ps1     Stop the running instance
-│   └── restart.ps1  Stop then start
-├── .env             Local configuration overrides (gitignored)
-├── .env.example     Configuration template (safe to check in)
+│   ├── start.ps1        Start the app in the background (no console window)
+│   ├── stop.ps1         Stop the running instance
+│   └── restart.ps1      Stop then start
+├── .env                 Local configuration overrides (gitignored)
+├── .env.example         Configuration template (safe to check in)
 └── requirements.txt
 ```
 
-The application runs as a pywebview window — a native Win32 window hosting a Chromium WebView2 pane. The Python process (`app.py`) handles all networking and authentication; the JavaScript in `ui.html` handles all rendering. They communicate over the pywebview `js_api` bridge: JavaScript calls Python methods directly, and Python pushes events to JavaScript via `window.evaluate_js()`.
+The application runs as a pywebview window — a native Win32 window hosting a Chromium WebView2 pane. The Python code (the `charter_client` package) handles all networking and authentication; the front-end (`ui.html` + `assets/app.css` + `assets/app.js`) handles all rendering. They communicate over the pywebview `js_api` bridge: JavaScript calls Python methods on the `Bridge` instance directly, and Python pushes events to JavaScript via `window.evaluate_js()`.
+
+`app.py` is intentionally thin — it parses CLI flags, takes the single-instance lock, builds the `Bridge`, starts the `AutoPoller`, creates the window, and hands off. Everything substantive lives in `charter_client/`. `config.py` runs its import side effects first (mute pywebview loggers, detect `azure-identity-broker` and the Foundry SDK, load `.env`, configure the logger), so importing it before any env-derived constant is read is load-bearing.
+
+### UI assets are loaded over `file://`
+
+pywebview points the WebView2 pane at `ui.html` via a `file://` URL. The `<link rel="stylesheet" href="assets/app.css">` and `<script src="assets/app.js">` references resolve relative to that location off disk — no bundler, no build step, no dev server. `app.js` is a classic (non-module) script on purpose: under `file://`, WebView2 applies CORS to `type="module"` loads and they can fail silently, so the SPA stays a single classic script.
 
 Closing the window does **not** exit the process — the app hides to the system tray and continues running the background poller. Click the tray icon to restore the window. Use **Quit** from the tray right-click menu to fully exit.
 
@@ -80,8 +98,10 @@ Key settings in `.env`:
 | Variable | Default | Purpose |
 |---|---|---|
 | `AGENT_ENDPOINT_HOSTED` | _(auto-derived)_ | Full `/responses` URL of the Foundry agent |
-| `FOUNDRY_PROJECT_ENDPOINT` | — | Used to auto-build the hosted URL when `AGENT_ENDPOINT_HOSTED` is not set |
-| `AGENT_NAME` | `charter-agent` | Agent name used when constructing the hosted URL |
+| `FOUNDRY_PROJECT_ENDPOINT` | — | Used to auto-build the hosted URL **and** as the SDK transport's project endpoint; if unset, the SDK path is unavailable and the client uses the raw-httpx transport |
+| `AGENT_NAME` | `charter-agent` | Agent name used when constructing the hosted URL and when minting the SDK session (`create_session`) |
+| `AGENT_VERSION` | _(latest)_ | Optional pinned agent version for the SDK session (`VersionRefIndicator`) |
+| `CHARTER_CLIENT_TRANSPORT` | `sdk` | `sdk` (default) or `legacy` to force the raw-httpx transport even in hosted mode |
 | `AGENT_ENDPOINT_MODE` | `hosted` | `hosted` or `local` |
 | `AGENT_ENDPOINT_LOCAL` | `http://localhost:8088/responses` | Local dev server URL |
 | `SPIKE_TENANT_ID` | _(discovered)_ | Entra tenant ID for MSAL token acquisition |
@@ -182,6 +202,46 @@ The client speaks the same **OpenAI Responses protocol** regardless of which end
 | `local` | `http://localhost:8088/responses` | Python process on this machine |
 | `hosted` | from `AGENT_ENDPOINT_HOSTED` env var | Deployed Foundry native agent |
 
+### Two transports: SDK (hosted default) and raw-httpx (legacy fallback)
+
+The client speaks the Responses protocol over **two interchangeable transports**. Both feed their events through the same switch in `Bridge` and share the same post-stream tail (`_finalize_turn`), so fork detection, the empty-completion retry, consent handling, and dashboard capture are identical regardless of which one runs.
+
+| Transport | Method | When it runs | How it talks to Foundry |
+|---|---|---|---|
+| **SDK** (showcase / default) | `Bridge._post_one_sdk` | Hosted mode, when the Foundry SDK is importable **and** a project endpoint resolves | `azure-ai-projects` — `AIProjectClient(...).get_openai_client(agent_name=…).responses.create(stream=True, …)` |
+| **Legacy raw-httpx** (fallback) | `Bridge._post_one_legacy` | Local mode, **or** any time the SDK path raises | Hand-rolled `httpx` streaming POST + a custom SSE parser (`protocol._iter_sse_events`) |
+
+`Bridge._post_one` is the dispatcher. It picks the SDK path when **all** of these hold: `mode == "hosted"`, the SDK imported at boot (`config._SDK_AVAILABLE`), `CHARTER_CLIENT_TRANSPORT` is not `legacy`, and `_resolve_project_endpoint()` returns a non-empty Foundry project endpoint. Otherwise — or if the SDK call throws — it falls through to the raw-httpx transport. Set `CHARTER_CLIENT_TRANSPORT=legacy` in the environment to force the raw-httpx path even in hosted mode (useful for debugging the wire).
+
+**Why two transports.** The SDK is the idiomatic, supported way to drive a Foundry-hosted agent: it mints the session server-side, owns the bearer/credential plumbing, and yields typed Responses events. But the SDK can only target a Foundry *project* endpoint — it cannot drive a `charter-agent` serving `/responses` on `http://localhost:8088` (localhost is not a project endpoint). The raw-httpx transport is therefore the only way to reach a **local** agent, and it doubles as the resilience fallback if the SDK path ever fails. It is retained verbatim and is **not** dead code.
+
+#### SDK transport — how it connects
+
+1. **Project client** — `_get_project_client()` lazily builds and caches one `AIProjectClient(endpoint=<project endpoint>, credential=_BridgeTokenCredential(self), allow_preview=True)`. The credential is the crucial part: `_BridgeTokenCredential` wraps the **signed-in end-user's MSAL bearer** (not `DefaultAzureCredential`), so Foundry OAuth Identity Passthrough still reaches WorkIQ as the user (invariant 3).
+2. **OpenAI client** — `_get_openai_client()` calls `project_client.get_openai_client(agent_name=<AGENT_NAME or "charter-agent">)`, which returns an OpenAI-compatible Responses client bound to that agent.
+3. **Session** — `_ensure_session_sdk()` mints the session **once per project** via `project_client.beta.agents.create_session(agent_name=…, isolation_key=<project_id>)` (plus an optional pinned `AGENT_VERSION`). The platform returns an `agent_session_id`, which is persisted to `projects.json` *immediately* — before the first `responses.create` — so a crash mid-turn never strands the project without its session handle.
+4. **Turn** — `responses.create(input=<prompt>, stream=True, extra_body={"agent_session_id": <session_id>}, previous_response_id=<id-or-omitted>)`. The SDK streams typed events; `protocol._sdk_event_to_dict` normalises each one to the same dict shape the legacy SSE parser produces, and the shared switch handles it.
+
+Note the **two distinct keys** in the SDK path: `isolation_key` is the stable, client-owned key (we use the `project_id`) that pins one Foundry session per project; `agent_session_id` is the platform's session handle that we persist and pass on every turn. They are kept separate and never conflated.
+
+#### Legacy raw-httpx transport — how it connects
+
+No SDK objects. `_post_one_legacy` builds the request by hand:
+
+```python
+body = {"input": prompt, "stream": True}
+if session_id:           body["agent_session_id"] = session_id
+if previous_response_id: body["previous_response_id"] = previous_response_id
+headers = {
+    "Authorization": f"Bearer {self.token}",      # the user's MSAL bearer
+    "Content-Type": "application/json",
+    "Accept": "text/event-stream",
+    "x-agent-chat-isolation-key": session_id,      # one Foundry session per project
+}
+```
+
+Here the client **mints the session id itself** — it uses the `project_id` as the `agent_session_id` (mirrored into the `x-agent-chat-isolation-key` header) rather than calling `create_session`. It then streams the POST with `httpx.Client(...).stream(...)` and parses the SSE frames with `protocol._iter_sse_events`. The event handling from `response.created` onward is identical to the SDK path.
+
 ### What differs between modes
 
 | Concern | Local mode | Hosted mode |
@@ -217,6 +277,8 @@ When the client creates a new project:
 4. The Foundry platform creates a new microVM and returns an `agent_session_id` in the `response.created` SSE event
 5. The client stores this `session_id` against the project in `projects.json`
 6. All subsequent messages for this project include `agent_session_id: <stored_session_id>`, routing to the same microVM
+
+The numbered flow above describes the **raw-httpx (legacy)** path, where the client mints the session id itself (it uses the `project_id`) and learns the platform's id from the `response.created` event. The **SDK** path is slightly different: `_ensure_session_sdk()` calls `beta.agents.create_session(isolation_key=<project_id>)` *before* the first turn, so the `agent_session_id` is **server-minted and persisted up front** — there is no "null until first message" window. Either way the result is the same: one stable `agent_session_id` per project, pinned to one microVM, persisted in `projects.json`.
 
 **Switching projects** swaps the active `session_id`. The next POST goes to the microVM for the new project — a completely separate filesystem with separate state.
 
@@ -296,7 +358,7 @@ Saved after first sign-in. Used for silent token refresh on subsequent launches.
 
 ## 7. SSE streaming and the agent event model
 
-The client issues a streaming POST to `/responses` and processes the SSE event stream synchronously in a background thread (the `_run_turn` / `_post_one` methods in `Bridge`). Events are pushed to JavaScript via `window.evaluate_js("window.onAgentEvent(msg)")`.
+The client drives one streaming turn per send, in a background thread, via `Bridge._post_one` — which dispatches to either the SDK transport (`_post_one_sdk`) or the raw-httpx transport (`_post_one_legacy`); see [§4](#4-calling-the-agent-local-vs-hosted). The SDK path consumes typed Responses events from `responses.create(stream=True)`; the legacy path consumes raw SSE frames parsed by `protocol._iter_sse_events`. Both are normalised to a single dict shape (`protocol._sdk_event_to_dict` for the SDK side) and run through the **same** event switch, so the table below applies to both. Events are pushed to JavaScript via `window.evaluate_js("window.onAgentEvent(msg)")`.
 
 ### SSE event types
 
@@ -313,7 +375,7 @@ The client issues a streaming POST to `/responses` and processes the SSE event s
 
 ### JavaScript event handling
 
-The `window.onAgentEvent` function in `ui.html` is a switch-based state machine that reacts to each event:
+The `window.onAgentEvent` function in `assets/app.js` is a switch-based state machine that reacts to each event:
 
 - `tool.call` — adds an activity card to the Activity panel (tool name + animated "running" state)
 - `text.delta` — streams text into the current agent bubble, running it through the Markdown renderer
@@ -443,7 +505,7 @@ The `AutoPoller` class (`app.py`) wakes up on a configurable interval and runs a
 
 ## 12. Architecture: Bridge pattern
 
-The `Bridge` class in `app.py` is the Python-side coordinator exposed to JavaScript via pywebview's `js_api`. Every button, dropdown, and send action in the UI calls a method on `Bridge`.
+The `Bridge` class in `charter_client/bridge.py` is the Python-side coordinator exposed to JavaScript via pywebview's `js_api`. Every button, dropdown, and send action in the UI calls a method on `Bridge`. (`app.py` constructs the single `Bridge` instance and passes it as the window's `js_api`; it holds no logic of its own.)
 
 ### Key Bridge methods (callable from JavaScript)
 
@@ -452,7 +514,7 @@ The `Bridge` class in `app.py` is the Python-side coordinator exposed to JavaScr
 | `ready()` | Returns initial context (session, user, projects, view) on app boot |
 | `signin_silent()` | Attempts silent token refresh using saved `AuthenticationRecord` |
 | `login()` | Interactive sign-in via WAM or browser |
-| `send(prompt, skill?)` | Starts a turn: refreshes token, posts to `/responses`, streams SSE |
+| `send(prompt, skill?)` | Starts a turn: refreshes token, dispatches to the SDK or raw-httpx transport via `_post_one`, streams the Responses events |
 | `run_now()` | Triggers an immediate background-poller check for the active project; emits `scheduler.tick` / `scheduler.done` and fires a toast — same path as the scheduled poller |
 | `new_project()` | Creates a new project entry, activates it |
 | `switch_project(id)` | Swaps `session_id` / `previous_response_id` to the selected project |
@@ -471,12 +533,14 @@ User clicks Send
        → refresh token if needed
        → spawn _run_turn in thread pool
        → return {ok: true}
-  → Python thread: _post_one()
-       → POST /responses (stream=true)
-       → for each SSE event:
+  → Python thread: _post_one()              [transport dispatcher]
+       → _post_one_sdk()  (hosted + SDK available)   responses.create(stream=True)
+         …or _post_one_legacy()  (local / fallback)  httpx POST /responses (stream=true)
+       → for each Responses event (normalised to one dict shape):
             → self._emit("text.delta", {delta: "..."})
                  → window.evaluate_js("window.onAgentEvent({event:'text.delta',...})")
                       → JS: currentAgentBuffer += delta; renderAgentText()
+       → _finalize_turn()  [shared tail for both transports]
        → self._emit("turn.complete", {...dashboard, text, response_id})
   → JS: turn.complete handler
        → renderDashboard(); saveTranscript(); refreshView()

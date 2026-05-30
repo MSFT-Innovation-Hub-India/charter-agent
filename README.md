@@ -53,6 +53,7 @@ The desktop app:
 
 - **Signs the user in** using Windows Account Manager (WAM) and maintains silent token refresh, so the user authenticates once and the app handles everything from there
 - **Manages multiple concurrent project threads** — each SOW project gets its own Foundry session with isolated microVM state; the sidebar switches between them instantly
+- **Talks to the hosted agent through the Foundry SDK** by default — `AIProjectClient.get_openai_client(...).responses.create(stream=True, …)`, with the session minted server-side via `beta.agents.create_session`. A retained raw-`httpx` transport is the fallback (and the only way to reach a local agent). See [desktop-client/README.md §4](desktop-client/README.md)
 - **Caches conversation transcripts and dashboard state** locally, so the UI restores instantly on launch or project switch without spending a model turn
 - **Acts as the autonomous trigger** — a background poller wakes up on a configurable schedule and posts to the hosted agent on the user's behalf, using the user's own identity. This is what makes the agent check for new replies without the user having to ask. No cloud scheduler, no server-side cron, no webhook — just the app running on the user's laptop
 - **Lives in the system tray** — the user can dismiss the window at any time, but the app keeps running. The background poller keeps firing. New replies keep getting captured. Toast notifications surface anything that needs attention. Clicking the tray icon brings the window back into focus
@@ -221,7 +222,7 @@ Start here, then follow the links that match your task:
 |---|---|---|
 | **This file** | Overview, scenario, capabilities, quick start | Always |
 | [`agent/README.md`](agent/README.md) | Agent architecture, MAF + Foundry packaging, Toolbox, telemetry, session/sandbox model, local development, deployment | Building or modifying the agent |
-| [`desktop-client/README.md`](desktop-client/README.md) | Desktop app, authentication flow, cache and local storage, SSE streaming, dashboard rendering, connection status | Working on the client |
+| [`desktop-client/README.md`](desktop-client/README.md) | Desktop app, authentication flow, SDK vs raw-httpx transports, session/sandbox handling, cache and local storage, SSE streaming, dashboard rendering | Working on the client |
 | [`AGENTS.md`](AGENTS.md) | **Operating contract** — non-negotiable invariants, conventions, change-safety checklist | Before every non-trivial change |
 | [`architecture/architecture_and_design.md`](architecture/architecture_and_design.md) | Component diagram, state schema, Toolbox wiring, auth flow, observability, security | When implementing or extending |
 | [`functional-specs/project_workspace_spec.md`](functional-specs/project_workspace_spec.md) | Requirements, scenarios, channel taxonomy, status semantics | Changing scope or behaviour |
@@ -359,9 +360,11 @@ charter-agent/
 │   ├── tests/                23 pure-Python tests (no network)
 │   └── pyproject.toml
 ├── desktop-client/           pywebview rich client
-│   ├── app.py                Auth, SSE streaming, Bridge, single-instance lock, tray
+│   ├── app.py                Thin entry point: argparse, single-instance lock, window/bridge/poller/tray wiring
+│   ├── charter_client/       Client package: config, protocol, auth, storage, notifications, poller, bridge, tray
 │   ├── tray_icon.py          Win32 system-tray icon (ctypes)
-│   ├── ui.html               Single-file UI (CSS + HTML + JS)
+│   ├── ui.html               UI markup shell (links assets/app.css + assets/app.js)
+│   ├── assets/               app.css (design system), app.js (SPA logic), icons
 │   ├── scripts/              Management scripts: start.ps1, stop.ps1, restart.ps1
 │   ├── .env.example          Configuration template
 │   └── requirements.txt

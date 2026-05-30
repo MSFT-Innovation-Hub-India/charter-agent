@@ -4,7 +4,7 @@
 >
 > Read [`../AGENTS.md`](../AGENTS.md) first for the non-negotiable invariants this design has been shaped around. The contract there is authoritative; this document elaborates it.
 
-**Status**: v0.5 (May 26, 2026). Two skills ship (`sow-response` and `general`); multi-project sidebar; per-project Foundry session model; client-side view cache and transcript persistence. For narrative explanations of the agent backend and the desktop client, see [`../agent/README.md`](../agent/README.md) and [`../desktop-client/README.md`](../desktop-client/README.md) respectively — this document covers the implementation contracts.
+**Status**: v0.6 (May 30, 2026). Two skills ship (`sow-response` and `general`); multi-project sidebar; per-project Foundry session model; client-side view cache and transcript persistence; two client transports (Foundry SDK default + raw-httpx fallback); the desktop client is refactored into the `charter_client/` package behind a thin `app.py` entry point. For narrative explanations of the agent backend and the desktop client, see [`../agent/README.md`](../agent/README.md) and [`../desktop-client/README.md`](../desktop-client/README.md) respectively — this document covers the implementation contracts.
 
 **Navigation:** [Root README](../README.md) · [Agent README](../agent/README.md) · [Desktop client README](../desktop-client/README.md) · [AGENTS.md](../AGENTS.md)
 
@@ -225,6 +225,8 @@ The dead modules and env vars (`runtime/workiq_token.py`, `runtime/workiq_token_
 
 The client surface is the **desktop client** under [`../desktop-client/`](../desktop-client/). It signs the user in via Windows Account Manager (WAM) or the system browser, caches the `AuthenticationRecord` for silent re-auth on subsequent launches, and POSTs the user bearer to `/responses`. See [`../desktop-client/README.md §3`](../desktop-client/README.md#3-authentication) for the full auth flow.
 
+The client logic lives in the `charter_client/` package; `app.py` is a thin entry point (argparse, single-instance lock, window/bridge/poller/tray wiring). The substantive modules are `config.py` (env + path + capability guards), `auth.py` (MSAL/WAM sign-in + `_BridgeTokenCredential`), `protocol.py` (SSE + SDK-event normalisation), `bridge.py` (the `Bridge` class — both transports + the `js_api` surface), `storage.py` (projects/transcript/view-cache I/O), `poller.py` (the opt-in `AutoPoller`), `notifications.py`, and `tray.py`. The UI is `ui.html` + `assets/app.css` + `assets/app.js` loaded over `file://` (no build step).
+
 The earlier spike under [`../spike/desktop_to_foundry/`](../spike/desktop_to_foundry/) is retained as a minimal proof of the identity-passthrough pattern. The production client is `desktop-client/`.
 
 ---
@@ -250,9 +252,9 @@ This section documents the exact bytes on the wire between the desktop client an
 
 **The protocol is the OpenAI Responses API.** This is not negotiable and is verified in three places in the code:
 
-- The endpoint path itself: `runtime/foundry_host.py` and the client's [`_resolve_hosted_url`](../desktop-client/app.py#L177-L187) construct `{FOUNDRY_PROJECT_ENDPOINT}/agents/<agent-name>/endpoint/protocols/openai/responses?api-version=v1` — the `/protocols/openai/responses` suffix is Foundry's declaration that this endpoint speaks the OpenAI Responses dialect.
+- The endpoint path itself: `runtime/foundry_host.py` and the client's [`_resolve_hosted_url`](../desktop-client/charter_client/config.py) construct `{FOUNDRY_PROJECT_ENDPOINT}/agents/<agent-name>/endpoint/protocols/openai/responses?api-version=v1` — the `/protocols/openai/responses` suffix is Foundry's declaration that this endpoint speaks the OpenAI Responses dialect.
 - The server is `agent-framework-foundry-hosting.ResponsesHostServer` (pinned in [agent/pyproject.toml](../agent/pyproject.toml)), which depends on `azure-ai-agentserver-responses`. Both names are explicit about the protocol.
-- The client's SSE consumer in [`_post_one`](../desktop-client/app.py#L1421) handles only the canonical Responses event types: `response.created`, `response.output_item.added`, `response.output_text.delta`, `response.function_call_arguments.delta`, `response.function_call_arguments.done`, `response.completed`, and the platform-specific `oauth_consent_request`. No custom event types, no custom envelope.
+- The client's SSE consumer in [`_post_one`](../desktop-client/charter_client/bridge.py) handles only the canonical Responses event types: `response.created`, `response.output_item.added`, `response.output_text.delta`, `response.function_call_arguments.delta`, `response.function_call_arguments.done`, `response.completed`, and the platform-specific `oauth_consent_request`. No custom event types, no custom envelope.
 
 **Two ids, two different jobs.** Every turn carries up to two identifiers, and they pin different things:
 
@@ -322,10 +324,10 @@ x-agent-chat-isolation-key: <project_id>
 
 | Concern | Function | File |
 |---|---|---|
-| Build the URL | `_resolve_hosted_url` | [`desktop-client/app.py`](../desktop-client/app.py#L177-L187) |
-| Build the request body + headers, POST, stream the response | `BridgeApi._post_one_legacy` | [`desktop-client/app.py`](../desktop-client/app.py) |
-| SSE frame parser (event name + data lines → `{event, data}`) | `_iter_sse_events` | [`desktop-client/app.py`](../desktop-client/app.py#L213-L233) |
-| Per-project pointer store (last `session_id`, last `previous_response_id`) | `~/.charter-agent/projects.json` via `_save_projects` / `_load_projects` | [`desktop-client/app.py`](../desktop-client/app.py) |
+| Build the URL | `_resolve_hosted_url` | [`charter_client/config.py`](../desktop-client/charter_client/config.py) |
+| Build the request body + headers, POST, stream the response | `Bridge._post_one_legacy` | [`charter_client/bridge.py`](../desktop-client/charter_client/bridge.py) |
+| SSE frame parser (event name + data lines → `{event, data}`) | `_iter_sse_events` | [`charter_client/protocol.py`](../desktop-client/charter_client/protocol.py) |
+| Per-project pointer store (last `session_id`, last `previous_response_id`) | `~/.charter-agent/projects.json` via `_save_projects` / `_load_projects` | [`charter_client/storage.py`](../desktop-client/charter_client/storage.py) |
 
 Body construction in `_post_one_legacy` is the minimal contract — only set fields when they exist, never send a null id:
 
@@ -382,7 +384,7 @@ Clearing `agent_session_id` in the retry instead would orphan the user's microVM
 
 #### Two client transports: SDK (hosted default) and raw-httpx (local + fallback)
 
-The desktop client speaks the same OpenAI Responses wire protocol through two transports, chosen per request by the `_post_one` dispatcher in [`desktop-client/app.py`](../desktop-client/app.py):
+The desktop client speaks the same OpenAI Responses wire protocol through two transports, chosen per request by the `_post_one` dispatcher in [`charter_client/bridge.py`](../desktop-client/charter_client/bridge.py):
 
 | Transport | When used | Mechanism | Session minting |
 |---|---|---|---|
@@ -393,12 +395,12 @@ The SDK transport is the idiomatic way to talk to a Foundry hosted agent and is 
 
 | Concern | Function | File |
 |---|---|---|
-| Transport dispatch (SDK vs raw-httpx + fallback) | `BridgeApi._post_one` | [`desktop-client/app.py`](../desktop-client/app.py) |
-| SDK transport (create_session + responses.create) | `BridgeApi._post_one_sdk` | [`desktop-client/app.py`](../desktop-client/app.py) |
-| Shared post-stream tail | `BridgeApi._finalize_turn` | [`desktop-client/app.py`](../desktop-client/app.py) |
-| Mint/cache the server session id | `BridgeApi._ensure_session_sdk` | [`desktop-client/app.py`](../desktop-client/app.py) |
-| User-bearer → azure-core credential shim | `_BridgeTokenCredential` | [`desktop-client/app.py`](../desktop-client/app.py) |
-| Retained raw-httpx transport | `BridgeApi._post_one_legacy` | [`desktop-client/app.py`](../desktop-client/app.py) |
+| Transport dispatch (SDK vs raw-httpx + fallback) | `Bridge._post_one` | [`charter_client/bridge.py`](../desktop-client/charter_client/bridge.py) |
+| SDK transport (create_session + responses.create) | `Bridge._post_one_sdk` | [`charter_client/bridge.py`](../desktop-client/charter_client/bridge.py) |
+| Shared post-stream tail | `Bridge._finalize_turn` | [`charter_client/bridge.py`](../desktop-client/charter_client/bridge.py) |
+| Mint/cache the server session id | `Bridge._ensure_session_sdk` | [`charter_client/bridge.py`](../desktop-client/charter_client/bridge.py) |
+| User-bearer → azure-core credential shim | `_BridgeTokenCredential` | [`charter_client/auth.py`](../desktop-client/charter_client/auth.py) |
+| Retained raw-httpx transport | `Bridge._post_one_legacy` | [`charter_client/bridge.py`](../desktop-client/charter_client/bridge.py) |
 
 #### Server-side: no session-handling code
 

@@ -161,6 +161,13 @@ project-A  →  agent_session_id: ses-abc  →  microVM-1  →  $HOME = /home/ag
 project-B  →  agent_session_id: ses-def  →  microVM-2  →  $HOME = /home/agent-def/
 ```
 
+**Where the `agent_session_id` comes from.** The agent never invents it — the client supplies it on every turn, and the client obtains it one of two ways depending on its transport (see [desktop-client/README.md §4](../desktop-client/README.md)):
+
+- **SDK transport (hosted default).** The client calls `AIProjectClient(...).beta.agents.create_session(agent_name=…, isolation_key=<project_id>)` **once per project**. Foundry mints the `agent_session_id` server-side and the client persists it. Here `isolation_key` is the client's stable per-project key (the `project_id`) and `agent_session_id` is the platform's session handle — distinct values that the client keeps separate. The id then rides on every `responses.create` via `extra_body={"agent_session_id": …}`.
+- **Legacy raw-httpx transport (local mode / fallback).** The client mints the id itself by using the `project_id` directly as the `agent_session_id`, sent in the request body and mirrored into the `x-agent-chat-isolation-key` header.
+
+Either way, from the agent's side the contract is identical: one stable `agent_session_id` per project pins one microVM and one `$HOME`. The host server mounts the right sandbox before the agent process runs.
+
 **Layer 2 — project_id → subfolder (agent-managed)**
 
 Within a session's `$HOME`, the agent further organises state by project ID. `project_router.py` reads the `project_id` from the message preamble and calls `state.set_active_project_id(pid)`, which writes a pointer to `$HOME/.active_project`. Every subsequent `state.project_path(filename)` call resolves to `$HOME/projects/<pid>/filename`.
@@ -452,6 +459,7 @@ Tests cover: `state.py` path containment and atomic writes, `skill_loader.py` ma
 | `runtime/responses_host.py` | `ResponsesHostServer` subclass — pre-routes requests, swaps skill Agent, degrades history failures |
 | `runtime/project_router.py` | Parses `[charter-agent-context:]` preamble, calls `state.set_active_project_id()` |
 | `runtime/skill_loader.py` | Reads `skills/*/SKILL.md`, validates frontmatter, returns `SkillBundle` per skill |
+| `runtime/orchestration_tools.py` | `invoke_skill(name, context)` — lets the `sow-response` orchestrator delegate a phase to a sub-skill within one turn |
 | `runtime/state_tools.py` | MAF `@tool` wrappers: `state_read_text/json`, `state_write_text/json`, `state_list_files`, `log_workflow_step` |
 | `skills/sow-response/tools.py` | Skill-specific in-process tools: `load_project_state`, `start_charter`, `add_charter_task`, `record_submission`, `dashboard_payload`, `publish_view`, etc. |
 | `skills/sow-response/SKILL.md` | The agent's instructions for the SOW response workflow — **authoritative contract** |
