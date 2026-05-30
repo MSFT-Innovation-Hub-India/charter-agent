@@ -1,0 +1,8 @@
+﻿az : ERROR: group or scope are not required when --all is used
+At line:1 char:9
++ $json = az role assignment list --resource-group pcdotai-agent --all  ...
++         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (ERROR: group or...n --all is used 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

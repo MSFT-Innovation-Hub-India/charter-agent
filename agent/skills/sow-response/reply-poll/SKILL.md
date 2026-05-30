@@ -61,7 +61,11 @@ Fetch any shared files or attachments before classifying.
 }
 ```
 
-## 4. Patch the log
+## 4. Patch the log (mandatory before you publish)
+
+Whenever you classify a reply — including an ad-hoc request to verify or re-check a single owner's submission — the resulting status and `submissions[]` entry **must** be written to the log. The dashboard reads status only from `project_log.json`; a classification you state in chat but do not persist will not appear, and the section will keep showing its old status.
+
+Never report a status verbally and offer to persist it "if you want" — persisting is not optional. If your analysis concludes a status change, write it this turn, before you publish.
 
 Read the current `tasks[]`, apply the updates, and patch in one call:
 
@@ -81,6 +85,6 @@ End with: "Say 'send them all' or name specific owners to send any of the above.
 
 Call `log_workflow_step("polled", "Polled <N> owners; <M> new replies found")`.
 
-Then emit the dashboard: call `dashboard_payload()` and immediately pass the result to `publish_view(payload)`.
+Then emit the dashboard: call `dashboard_payload()` and immediately pass the result to `publish_view(payload)`. Do this only after step 4's patch has been written — the dashboard must reflect the status now in the log, never a status you reported only in chat.
 
 Stay in `phase: "tasks_allocated"` — this step repeats on every trigger. Do not change the phase.

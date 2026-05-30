@@ -380,6 +380,8 @@ There are **two orthogonal identifiers** on every Responses turn:
 
 The microVM survives container restarts within the 30-day window; the in-memory transcript does not. **Never conflate them.**
 
+**How the `agent_session_id` is obtained depends on the client transport (see §11.7).** In the **SDK transport** (hosted default) it is **server-minted**: the client calls `beta.agents.create_session(agent_name, isolation_key=<project_id>, …)` once per project and persists the returned `agent_session_id`, then passes it via `extra_body` on every `responses.create`. Here `isolation_key` (= `project_id`) is the stable client-owned key and `agent_session_id` is the platform's session handle — they stay distinct. In the **raw-httpx transport** (local mode + fallback) the client mints it itself by using `project_id` as the `agent_session_id`. Either way it pins the same persistent microVM + `$HOME`.
+
 **Silent empty-completion failure mode.** When the client sends a `previous_response_id` whose transcript has rolled, the hosted endpoint returns **200 OK** with `response.created` → `response.in_progress` → `response.completed` and zero `output_text` / `function_call` events. No error, no exception. The UI looks hung. Easy to misdiagnose as a network or auth issue — it is neither.
 
 **Correct recovery (in `_post_one`):** on stream-done, if `previous_response_id` was sent AND no consent payload AND no final text AND event count ≤ 4, retry the same prompt with `previous_response_id=None` and **the same `session_id`**. Clearing `session_id` in the retry orphans the user's microVM and forces a `first_run`, silently losing the entire sandbox pointer.
@@ -548,14 +550,21 @@ Wiring requirements (set once at boot inside `runtime/foundry_host.py`):
 
 ### 11.7 Client contract
 
-The desktop client at [`desktop-client/`](desktop-client/) (pywebview + WebView2) is the only shipped client surface. The CLI scripts under [`spike/desktop_to_foundry/`](spike/desktop_to_foundry/) are kept as a reference / debugging client. On every request to the deployed agent's gated `/responses` endpoint:
+The desktop client at [`desktop-client/`](desktop-client/) (pywebview + WebView2) is the only shipped client surface. The CLI scripts under [`spike/desktop_to_foundry/`](spike/desktop_to_foundry/) are kept as a reference / debugging client.
+
+**Two transports, one wire protocol.** The client speaks the OpenAI Responses protocol through two interchangeable transports, selected per request by the `_post_one` dispatcher (override with `CHARTER_CLIENT_TRANSPORT=legacy`):
+
+- **SDK transport (`_post_one_sdk`) — hosted default, the showcase path.** Uses the `azure-ai-projects` SDK: `AIProjectClient.get_openai_client(agent_name=…).responses.create(stream=True, extra_body={"agent_session_id": …}, previous_response_id=…)`. The session is **server-minted** once per project via `beta.agents.create_session(agent_name, isolation_key=<project_id>, …)`; the returned `agent_session_id` is persisted in the project record and reused on every turn. `isolation_key` is the stable client-owned key (= `project_id`); `agent_session_id` is the platform's session handle — kept distinct, never conflated. Auth uses a `_BridgeTokenCredential` shim wrapping the signed-in user's MSAL bearer (**not** `DefaultAzureCredential`) so Identity Passthrough still reaches WorkIQ as the user (invariant 3).
+- **Raw-httpx transport (`_post_one_legacy`) — local mode + automatic fallback.** The original hand-rolled `httpx` streaming path, retained verbatim as the last method of `Bridge`. It is the only way to reach a local `/responses` server (localhost is not a Foundry project endpoint, so the SDK can't drive it) and the resilience fallback if the SDK path raises. Here the client **mints the session id itself** (`project_id` → `agent_session_id`).
+
+Both transports feed events through the same switch and share the post-stream tail (`_finalize_turn`), so fork detection, the empty-completion retry, consent handling, and dashboard capture are identical. On every request to the deployed agent's gated `/responses` endpoint:
 
 | Concern | Rule |
 |---|---|
-| Routing | One Foundry session per project. The client uses `project_id` as both `?agent_session_id` and the `x-agent-chat-isolation-key` header. |
-| Header `x-agent-chat-isolation-key` | Always `= project_id` (one Foundry session per project). |
+| Routing | One Foundry session per project. SDK path: `isolation_key = project_id`; raw-httpx path: `agent_session_id = project_id` mirrored to the `x-agent-chat-isolation-key` header. |
+| Header `x-agent-chat-isolation-key` | Raw-httpx path always `= project_id` (one Foundry session per project). SDK path passes the session via `extra_body` instead. |
 | Header `Authorization` | `Bearer {user_token}` acquired by MSAL public client (or `az login` for dev) with scope `https://ai.azure.com/.default`. The Foundry platform propagates that identity into WorkIQ calls via Identity Passthrough (invariant 3). |
-| Body | `{ "input": <user_message>, "previous_response_id": <id-or-null>, "stream": true }`. The host server owns multi-turn history via `previous_response_id`. |
+| Body | `{ "input": <user_message>, "previous_response_id": <id-or-null>, "stream": true }` (raw-httpx) / equivalent `responses.create(...)` kwargs (SDK). The host server owns multi-turn history via `previous_response_id`. |
 | SSE | Pass through the standard OpenAI Responses event stream (`response.created`, `response.output_text.delta`, tool-call events, `response.completed`). The `oauth_consent_request` event carries a Microsoft login URL the client must open in a browser; once consent completes, the client retries the same prompt with `previous_response_id` set to the in-flight response. |
 | Cold-start UX | Show "warming up…" for 2–5s after 15-min idle on the first request of a session. |
 
@@ -596,7 +605,7 @@ Pin these in `agent/pyproject.toml`. Do not substitute without an ADR.
 
 **Agent dev/CI:** `import-linter`, `ruff`, `pyright`, `pytest`, `pytest-asyncio`, `respx`, `freezegun`.
 
-**Desktop client** ([`desktop-client/requirements.txt`](desktop-client/requirements.txt)): `pywebview`, `msal`, `httpx`, `winotify`.
+**Desktop client** ([`desktop-client/requirements.txt`](desktop-client/requirements.txt)): `pywebview`, `msal`, `httpx`, `winotify`, `azure-identity`, `azure-ai-projects>=2.1.0` (SDK transport — `AIProjectClient` + `get_openai_client` + `beta.agents.create_session`; pulls `openai` transitively).
 
 ### 11.10 Phases
 

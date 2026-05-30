@@ -261,7 +261,12 @@ This section documents the exact bytes on the wire between the desktop client an
 | `agent_session_id` | Request body (top-level) **and** mirrored to header `x-agent-chat-isolation-key` | The persistent Foundry microVM and its `$HOME` (`project_charter.md`, `project_log.json`, `activity.json`, `agent_session/<id>.json`) | Up to 30 days | Foundry idle-reap or platform GC |
 | `previous_response_id` | Request body (top-level) | The Responses host's in-memory transcript chain (message history only) | Process lifetime of the agent container | Container restart (deploy, scale-in, crash) |
 
-**The client mints the session id, not the server.** A new project's first request is **not** a "get a session id" handshake — the desktop client uses `project_id` as the `agent_session_id` and sends it on call 1. Foundry provisions a fresh microVM bound to that id and echoes it back in `response.created`. If the server ever returns a *different* `agent_session_id` than the one sent, that is a **session fork**: Foundry rejected the request (typically because `previous_response_id` was stale and didn't match the session), provisioned a new VM, and the original `$HOME` is orphaned. The client detects this in `_post_one` and emits `session.forked` rather than silently adopting the new id ([app.py:1497–1517](../desktop-client/app.py#L1497-L1517)).
+**Who mints the session id depends on the transport.** The client has two transports for the *same* wire protocol (see "Two client transports" below):
+
+- **SDK transport (hosted default).** The session id is **minted by the platform**. On a new project's first turn the client calls `beta.agents.create_session(agent_name, isolation_key=<project_id>, …)`, which returns a server-generated `agent_session_id`. `isolation_key` is the stable client-owned key (the `project_id`) that pins one Foundry session per project; the returned `agent_session_id` is the session handle the client persists and passes (via `extra_body`) on every subsequent `responses.create`. So `project_id` and `agent_session_id` stay distinct: the former is the durable UI/`$HOME`-namespace key, the latter is the platform's session handle.
+- **Raw-httpx transport (local mode + fallback).** The client **mints the session id itself** by using `project_id` as the `agent_session_id` and sending it on call 1; Foundry provisions a fresh microVM bound to that id and echoes it back in `response.created`.
+
+In both transports, if the server ever returns a *different* `agent_session_id` than the one in play, that is a **session fork**: Foundry rejected the request (typically because `previous_response_id` was stale and didn't match the session), provisioned a new VM, and the original `$HOME` is orphaned. Both transports detect this and emit `session.forked` rather than silently adopting the new id.
 
 #### Call 1 — new project (no `previous_response_id` yet)
 
@@ -313,14 +318,16 @@ x-agent-chat-isolation-key: <project_id>
 
 #### Where this lives in the client
 
+> The HTTP examples above and the function references in this table describe the **raw-httpx** transport (`_post_one_legacy`) because it shows the literal bytes. The **SDK** transport (the hosted default, `_post_one_sdk`) produces the equivalent wire traffic but obtains `agent_session_id` from `create_session` and lets the SDK own the SSE parsing — see "Two client transports" above.
+
 | Concern | Function | File |
 |---|---|---|
 | Build the URL | `_resolve_hosted_url` | [`desktop-client/app.py`](../desktop-client/app.py#L177-L187) |
-| Build the request body + headers, POST, stream the response | `BridgeApi._post_one` | [`desktop-client/app.py`](../desktop-client/app.py#L1421) |
+| Build the request body + headers, POST, stream the response | `BridgeApi._post_one_legacy` | [`desktop-client/app.py`](../desktop-client/app.py) |
 | SSE frame parser (event name + data lines → `{event, data}`) | `_iter_sse_events` | [`desktop-client/app.py`](../desktop-client/app.py#L213-L233) |
 | Per-project pointer store (last `session_id`, last `previous_response_id`) | `~/.charter-agent/projects.json` via `_save_projects` / `_load_projects` | [`desktop-client/app.py`](../desktop-client/app.py) |
 
-Body construction in `_post_one` is the minimal contract — only set fields when they exist, never send a null id:
+Body construction in `_post_one_legacy` is the minimal contract — only set fields when they exist, never send a null id:
 
 ```python
 body: dict[str, Any] = {"input": prompt, "stream": True}
@@ -337,9 +344,9 @@ if _session_id:
     headers["x-agent-chat-isolation-key"] = _session_id
 ```
 
-#### How `_post_one` parses the stream
+#### How the stream is parsed
 
-`_post_one` opens an `httpx.Client.stream("POST", url, json=body, headers=headers)`, feeds the response to `_iter_sse_events`, then switches on `data["type"]` (falling back to the SSE `event:` line). The handled events:
+`_post_one_legacy` opens an `httpx.Client.stream("POST", url, json=body, headers=headers)`, feeds the response to `_iter_sse_events`, then switches on `data["type"]` (falling back to the SSE `event:` line). The SDK path (`_post_one_sdk`) normalises each typed SDK event to a dict via `_sdk_event_to_dict` and runs the **same** switch. The handled events:
 
 - `response.created` — capture `response.id` into `response_id`; capture `agent_session_id`. If it differs from what was sent, emit `session.forked`; persist whatever the server reports as authoritative for this project via `_save_projects`. Emit `session.update` to the UI.
 - `response.output_item.added` — if the item is a `function_call` / `tool_call`, remember the tool name and emit `tool.call`.
@@ -349,13 +356,13 @@ if _session_id:
 - Any event whose name contains `consent` — stash as `consent_payload`; after the stream ends, open the consent URL in a browser and re-POST the same prompt with `previous_response_id=<this response_id>` to resume.
 - Any event ending in `.failed` / `.error` — emit `turn.error` and stop.
 
-After the stream closes, `_post_one` persists `response_id` as the project's new `previous_response_id` and emits `turn.complete` with `{response_id, session_id, project_id, text, dashboard}`.
+After the stream closes, the shared tail (`_finalize_turn`, also called inline by `_post_one_legacy`) persists `response_id` as the project's new `previous_response_id` and emits `turn.complete` with `{response_id, session_id, project_id, text, dashboard}`.
 
 #### The silent empty-completion failure mode (and the only correct recovery)
 
 When `previous_response_id` references a transcript that has rolled (container restart since the chain was minted), the hosted endpoint returns **200 OK** with `response.created` → `response.in_progress` → `response.completed` and **zero** `output_text` / `function_call` events. No error, no exception — the UI looks hung. Easy to misdiagnose as auth or network failure.
 
-The recovery, implemented in [`_post_one`](../desktop-client/app.py#L1591-L1614), is to retry the same prompt with `previous_response_id=None` **but the same `agent_session_id`**:
+The recovery, implemented in the shared `_finalize_turn` (and inline in `_post_one_legacy`), is to retry the same prompt with `previous_response_id=None` **but the same `agent_session_id`**:
 
 ```python
 if (
@@ -372,6 +379,26 @@ if (
 ```
 
 Clearing `agent_session_id` in the retry instead would orphan the user's microVM — the entire sandbox (charter, project log, activity) gets stranded and the next turn looks like a new project.
+
+#### Two client transports: SDK (hosted default) and raw-httpx (local + fallback)
+
+The desktop client speaks the same OpenAI Responses wire protocol through two transports, chosen per request by the `_post_one` dispatcher in [`desktop-client/app.py`](../desktop-client/app.py):
+
+| Transport | When used | Mechanism | Session minting |
+|---|---|---|---|
+| **SDK** (`_post_one_sdk`) | Hosted mode, when `azure-ai-projects` is installed and a project endpoint resolves (override with `CHARTER_CLIENT_TRANSPORT=legacy`) | `AIProjectClient.get_openai_client().responses.create(stream=True, extra_body={"agent_session_id": …})`; session via `beta.agents.create_session(...)` | Server-minted (platform) |
+| **Raw-httpx** (`_post_one_legacy`) | Local mode (a localhost charter-agent is not a Foundry project endpoint, so the SDK can't drive it), and as the automatic fallback if the SDK path raises | `httpx.Client.stream("POST", …)` + the hand-rolled `_iter_sse_events` parser | Client-minted (`project_id`) |
+
+The SDK transport is the idiomatic way to talk to a Foundry hosted agent and is the showcase default; the raw-httpx path is retained verbatim (as the last method of the `Bridge` class) because it is the only way to reach a local `/responses` server and because it is the resilience fallback. Both feed their (normalised-to-dict) events through the **same** event switch and share the post-stream tail (`_finalize_turn`), so behaviour — fork detection, the empty-completion retry, consent handling, dashboard capture — is identical across them. The SDK transport authenticates with a `_BridgeTokenCredential` shim that wraps the **signed-in user's** MSAL bearer (never `DefaultAzureCredential`), preserving Foundry's OAuth Identity Passthrough so WorkIQ still sees the end user (invariant 3).
+
+| Concern | Function | File |
+|---|---|---|
+| Transport dispatch (SDK vs raw-httpx + fallback) | `BridgeApi._post_one` | [`desktop-client/app.py`](../desktop-client/app.py) |
+| SDK transport (create_session + responses.create) | `BridgeApi._post_one_sdk` | [`desktop-client/app.py`](../desktop-client/app.py) |
+| Shared post-stream tail | `BridgeApi._finalize_turn` | [`desktop-client/app.py`](../desktop-client/app.py) |
+| Mint/cache the server session id | `BridgeApi._ensure_session_sdk` | [`desktop-client/app.py`](../desktop-client/app.py) |
+| User-bearer → azure-core credential shim | `_BridgeTokenCredential` | [`desktop-client/app.py`](../desktop-client/app.py) |
+| Retained raw-httpx transport | `BridgeApi._post_one_legacy` | [`desktop-client/app.py`](../desktop-client/app.py) |
 
 #### Server-side: no session-handling code
 

@@ -88,6 +88,23 @@ except Exception:  # noqa: BLE001
     InteractiveBrowserBrokerCredential = None  # type: ignore[assignment]
     _BROKER_AVAILABLE = False
 
+# Foundry hosted-agent client SDK (preview). This is the idiomatic transport for
+# hosted mode: it mints a server-side session via beta.agents.create_session()
+# and drives the Responses API through get_openai_client().responses.create()
+# with typed streaming events. If the package isn't installed we silently fall
+# back to the retained raw-httpx transport (see _post_one_legacy), so the app
+# still runs without it.
+try:
+    from azure.ai.projects import AIProjectClient  # type: ignore
+    from azure.ai.projects.models import VersionRefIndicator  # type: ignore
+    from azure.core.credentials import AccessToken  # type: ignore
+    _SDK_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    AIProjectClient = None  # type: ignore[assignment]
+    VersionRefIndicator = None  # type: ignore[assignment]
+    AccessToken = None  # type: ignore[assignment]
+    _SDK_AVAILABLE = False
+
 DEFAULT_LOCAL = "http://localhost:8088/responses"
 DEFAULT_HOSTED_AGENT_NAME = "charter-agent"
 TENANT_ID = os.environ.get("SPIKE_TENANT_ID") or None
@@ -185,6 +202,73 @@ def _resolve_hosted_url() -> str:
     agent_name = os.environ.get("AGENT_NAME") or DEFAULT_HOSTED_AGENT_NAME
     return f"{project_endpoint}/agents/{agent_name}/endpoint/protocols/openai/responses?api-version=v1"
 
+
+def _resolve_project_endpoint() -> str:
+    """Resolve the Foundry *project* endpoint used by the SDK client.
+
+    This is the `.../api/projects/<project>` base — distinct from the
+    `/responses` URL. Prefer FOUNDRY_PROJECT_ENDPOINT; otherwise derive it by
+    stripping the `/agents/<name>/endpoint/...` suffix from the hosted URL.
+    """
+    ep = (os.environ.get("FOUNDRY_PROJECT_ENDPOINT") or "").strip().rstrip("/")
+    if ep:
+        return ep
+    hosted = _resolve_hosted_url()
+    m = re.match(r"(?P<base>.*?)/agents/[^/]+/endpoint/protocols/openai/responses", hosted)
+    return m.group("base") if m else ""
+
+
+def _sdk_event_to_dict(event: object) -> dict:
+    """Normalise an OpenAI/Foundry streaming event into a plain dict.
+
+    The SDK yields typed pydantic event models. We funnel them through the same
+    dict-shaped switch the raw-httpx path uses, so the two transports share the
+    exact same event-handling semantics.
+    """
+    if isinstance(event, dict):
+        return event
+    for attr in ("model_dump", "to_dict"):
+        fn = getattr(event, attr, None)
+        if callable(fn):
+            try:
+                d = fn()
+                if isinstance(d, dict):
+                    return d
+            except Exception:  # noqa: BLE001
+                pass
+    # Best-effort fallback for unknown/untyped events (e.g. Foundry-specific
+    # oauth_consent_request frames the OpenAI typed union doesn't model).
+    out: dict = {}
+    for k in ("type", "delta", "arguments", "id", "item", "response", "agent_session_id"):
+        v = getattr(event, k, None)
+        if v is None:
+            continue
+        sub = getattr(v, "model_dump", None)
+        out[k] = sub() if callable(sub) else v
+    return out
+
+
+class _BridgeTokenCredential:
+    """Adapts the desktop client's MSAL bearer to azure-core's TokenCredential.
+
+    Critically this propagates the END-USER's delegated token (not a service /
+    managed identity), so Foundry's OAuth Identity Passthrough reaches WorkIQ as
+    the signed-in user — preserving invariant 3. Do NOT swap this for
+    DefaultAzureCredential: that would auth the SDK as a service principal and
+    break per-user M365 access.
+    """
+
+    def __init__(self, bridge: "Bridge") -> None:
+        self._bridge = bridge
+
+    def get_token(self, *scopes: str, **kwargs: object) -> "AccessToken":  # type: ignore[name-defined]
+        b = self._bridge
+        # Refresh proactively if the cached bearer is missing or within 60s of expiry.
+        if not b.token or time.time() >= (b.token_expires_at - 60):
+            b.login()
+        return AccessToken(b.token or "", int(b.token_expires_at))
+
+
 UI_HTML = pathlib.Path(__file__).with_name("ui.html")
 ASSETS_DIR = pathlib.Path(__file__).with_name("assets")
 APP_ICON_ICO = ASSETS_DIR / "app_icon.ico"
@@ -208,6 +292,22 @@ _APP_HOME = pathlib.Path.home() / ".charter-agent"
 _AUTH_RECORD_PATH = _APP_HOME / "auth_records" / f"{AUTH_CACHE_NAME}.json"
 
 logger = logging.getLogger("charter_desktop")
+
+# Optional file logging. The app runs under pythonw.exe (no console), so by
+# default logger output goes nowhere. Set CHARTER_CLIENT_LOG=1 to capture
+# verbose client logs (including the per-event [sdk]/[bridge] traces used to
+# diagnose transport issues) to ~/.charter-agent/client.log.
+if os.environ.get("CHARTER_CLIENT_LOG"):
+    try:
+        _log_path = _APP_HOME / "client.log"
+        _log_path.parent.mkdir(parents=True, exist_ok=True)
+        _fh = logging.FileHandler(_log_path, encoding="utf-8")
+        _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(_fh)
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _iter_sse_events(response: httpx.Response):
@@ -829,6 +929,10 @@ class Bridge:
         self.user_oid: str | None = None
         self._credential: Any = None
         self._record_saved: bool = _AUTH_RECORD_PATH.exists()
+        # Foundry SDK client handles (hosted mode). Built lazily on first use so
+        # we have a signed-in user bearer to wrap. Cached for the process life.
+        self._project_client: Any = None
+        self._openai_client: Any = None
         self.endpoints = {"local": local_url, "hosted": hosted_url}
         self.mode: str = initial_mode if initial_mode in self.endpoints else "hosted"
         self._lock = threading.Lock()
@@ -1086,12 +1190,30 @@ class Bridge:
         url = self.endpoints.get("hosted") or ""
         if not url:
             return
-        # Strip `/protocols/openai/responses[?...]` to get the agent endpoint base.
-        base = re.sub(r"/protocols/openai/responses(\?.*)?$", "", url)
         token = self.token
         if not token:
             logger.debug("[bridge] delete_hosted skipped (no token) session=%s", session_id)
             return
+        # Preferred path: the SDK's typed delete_session, when the SDK is
+        # available and a project endpoint resolves. This is the idiomatic
+        # counterpart of the create_session used to mint the session.
+        if (
+            _SDK_AVAILABLE
+            and os.environ.get("CHARTER_CLIENT_TRANSPORT", "sdk").strip().lower() != "legacy"
+            and _resolve_project_endpoint()
+        ):
+            try:
+                agent_name = os.environ.get("AGENT_NAME") or DEFAULT_HOSTED_AGENT_NAME
+                self._get_project_client().beta.agents.delete_session(
+                    agent_name=agent_name, agent_session_id=session_id
+                )
+                logger.debug("[sdk] delete_session ok session=%s", session_id)
+                return
+            except Exception as ex:  # noqa: BLE001
+                logger.warning("[sdk] delete_session failed (%s); falling back to REST", ex)
+        # Fallback: best-effort REST DELETE against the agentserver session path.
+        # Strip `/protocols/openai/responses[?...]` to get the agent endpoint base.
+        base = re.sub(r"/protocols/openai/responses(\?.*)?$", "", url)
         candidates = [
             f"{base}/agent-sessions/{session_id}?api-version=v1",
             f"{base}/sessions/{session_id}?api-version=v1",
@@ -1418,7 +1540,440 @@ class Bridge:
                 if done_event:
                     done_event.set()
 
+    # ------------------------------------------------------------------
+    # Foundry SDK client handles (hosted mode)
+    # ------------------------------------------------------------------
+    def _get_project_client(self) -> Any:
+        """Lazily build + cache the AIProjectClient, authed as the signed-in user."""
+        if self._project_client is None:
+            endpoint = _resolve_project_endpoint()
+            if not endpoint:
+                raise RuntimeError("FOUNDRY_PROJECT_ENDPOINT unset; cannot build SDK client")
+            self._project_client = AIProjectClient(
+                endpoint=endpoint,
+                credential=_BridgeTokenCredential(self),
+                allow_preview=True,
+            )
+        return self._project_client
+
+    def _get_openai_client(self) -> Any:
+        """Lazily build + cache the agent-bound OpenAI Responses client."""
+        if self._openai_client is None:
+            agent_name = os.environ.get("AGENT_NAME") or DEFAULT_HOSTED_AGENT_NAME
+            self._openai_client = self._get_project_client().get_openai_client(agent_name=agent_name)
+        return self._openai_client
+
+    def _ensure_session_sdk(self, project_dict: dict[str, Any], isolation_key: str) -> str:
+        """Return this project's server-minted session id, creating one if needed.
+
+        The session id is minted by the platform (not chosen by us) via
+        beta.agents.create_session. `isolation_key` is the stable client-owned
+        key (we use the project_id) that pins one Foundry session per project;
+        the returned agent_session_id is the session handle we persist and pass
+        on every subsequent turn.
+        """
+        sid = project_dict.get("session_id")
+        if sid:
+            return sid
+        pc = self._get_project_client()
+        agent_name = os.environ.get("AGENT_NAME") or DEFAULT_HOSTED_AGENT_NAME
+        kwargs: dict[str, Any] = {"agent_name": agent_name, "isolation_key": isolation_key}
+        version = (os.environ.get("AGENT_VERSION") or "").strip()
+        if version and VersionRefIndicator is not None:
+            kwargs["version_indicator"] = VersionRefIndicator(agent_version=version)
+        session = pc.beta.agents.create_session(**kwargs)
+        sid = getattr(session, "agent_session_id", None) or getattr(session, "id", None)
+        if not sid:
+            raise RuntimeError("create_session returned no agent_session_id")
+        # Persist the server-minted id IMMEDIATELY — before the first
+        # responses.create — so a crash mid-turn never strands the project
+        # without its session handle.
+        project_dict["session_id"] = sid
+        _save_projects(self._projects_data)
+        self._emit("session.update", {"session_id": sid})
+        logger.info("[sdk] minted session project=%s session=%s", isolation_key, sid)
+        return sid
+
+    # ------------------------------------------------------------------
+    # Transport dispatch
+    # ------------------------------------------------------------------
     def _post_one(
+        self,
+        prompt: str,
+        *,
+        url: str,
+        previous_response_id: str | None,
+        display_prompt: str = "",
+        auto: bool = False,
+        project_label: str = "",
+        prev_snap: dict[str, str] | None = None,
+        _ctx: dict | None = None,
+    ) -> None:
+        """Drive one turn, choosing the transport for the current mode.
+
+        Hosted mode uses the Foundry SDK path (_post_one_sdk) — the idiomatic
+        way to talk to a hosted agent: it mints a server-side session and
+        streams the Responses API through the SDK's typed events. Local mode
+        (a charter-agent serving /responses on localhost, which is not a
+        Foundry project endpoint) and any SDK failure fall back to the retained
+        raw-httpx transport (_post_one_legacy).
+        """
+        use_sdk = (
+            self.mode == "hosted"
+            and _SDK_AVAILABLE
+            and os.environ.get("CHARTER_CLIENT_TRANSPORT", "sdk").strip().lower() != "legacy"
+            and bool(_resolve_project_endpoint())
+        )
+        if use_sdk:
+            try:
+                self._post_one_sdk(
+                    prompt,
+                    url=url,
+                    previous_response_id=previous_response_id,
+                    display_prompt=display_prompt,
+                    auto=auto,
+                    project_label=project_label,
+                    prev_snap=prev_snap,
+                    _ctx=_ctx,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[sdk] transport failed, falling back to raw-httpx: %s", exc, exc_info=True)
+        self._post_one_legacy(
+            prompt,
+            url=url,
+            previous_response_id=previous_response_id,
+            display_prompt=display_prompt,
+            auto=auto,
+            project_label=project_label,
+            prev_snap=prev_snap,
+            _ctx=_ctx,
+        )
+
+    def _post_one_sdk(
+        self,
+        prompt: str,
+        *,
+        url: str,
+        previous_response_id: str | None,
+        display_prompt: str = "",
+        auto: bool = False,
+        project_label: str = "",
+        prev_snap: dict[str, str] | None = None,
+        _ctx: dict | None = None,
+    ) -> None:
+        """Hosted-mode transport via the Foundry SDK + OpenAI Responses client.
+
+        Mirrors the event semantics of _post_one_legacy (session-fork detection,
+        empty-completion retry, consent, dashboard capture) but lets the SDK own
+        the wire: create_session mints the session, responses.create(stream=True)
+        yields typed events which we normalise to dicts and run through the same
+        switch. The shared tail lives in _finalize_turn.
+        """
+        _p: dict[str, Any] = (_ctx or {}).get("project_dict") or self._current
+        _pid: str = (_ctx or {}).get("pid") or self.project_id
+        _skill_at_start = _p.get("skill") or "general"
+
+        # isolation_key = stable client-owned project key; the session id is
+        # whatever the platform mints for it.
+        _session_id = self._ensure_session_sdk(_p, _pid)
+        if _ctx is not None:
+            _ctx["session_id"] = _session_id
+
+        oc = self._get_openai_client()
+        create_kwargs: dict[str, Any] = {
+            "input": prompt,
+            "stream": True,
+            "extra_body": {"agent_session_id": _session_id},
+        }
+        if previous_response_id:
+            create_kwargs["previous_response_id"] = previous_response_id
+
+        response_id: str | None = None
+        completed_text_parts: list[str] = []
+        consent_payload: dict | None = None
+        current_tool: dict[str, str] | None = None
+        published_dashboard: dict | None = None
+
+        logger.debug("[sdk] responses.create project=%s session=%s prev_resp=%s", _pid, _session_id, previous_response_id)
+        event_count = 0
+        stream = oc.responses.create(**create_kwargs)
+        for event in stream:
+            event_count += 1
+            data = _sdk_event_to_dict(event)
+            etype = data.get("type")
+            if event_count <= 5 or event_count % 25 == 0:
+                logger.debug("[sdk] evt#%d type=%s", event_count, etype)
+            # Diagnostic: tool-call / function-call / item events are where the
+            # publish_view dashboard payload rides. Dump them fully so we can see
+            # the exact SDK event shape if the dashboard/skill/logs don't surface.
+            if etype and ("function_call" in etype or "tool" in etype or "output_item" in etype):
+                logger.debug("[sdk] tool-evt type=%s data=%s", etype, json.dumps(data)[:3000])
+
+            if etype == "response.created":
+                resp_obj = data.get("response") or {}
+                response_id = resp_obj.get("id") or data.get("id")
+                sid = resp_obj.get("agent_session_id") or data.get("agent_session_id")
+                if sid:
+                    _log_session(self.mode, _pid, sid)
+                if sid and sid != _session_id:
+                    if _session_id and previous_response_id:
+                        logger.warning(
+                            "[sdk] session fork detected project=%s: sent=%s got=%s — "
+                            "Foundry created a new session (stale prev_resp_id).",
+                            _pid, _session_id, sid,
+                        )
+                        self._emit("session.forked", {"old_session_id": _session_id, "new_session_id": sid})
+                    _session_id = sid
+                    _p["session_id"] = sid
+                    _save_projects(self._projects_data)
+                    self._emit("session.update", {"session_id": sid})
+                continue
+
+            if etype == "response.output_item.added":
+                item = data.get("item") or {}
+                if item.get("type") in ("function_call", "tool_call"):
+                    current_tool = {"name": str(item.get("name") or "?"), "args": ""}
+                    self._emit("tool.call", {"name": current_tool["name"]})
+                continue
+
+            if etype == "response.function_call_arguments.delta":
+                if current_tool is not None:
+                    current_tool["args"] += str(data.get("delta") or "")
+                continue
+
+            if etype == "response.function_call_arguments.done":
+                if current_tool is not None:
+                    current_tool["args"] = str(data.get("arguments") or current_tool["args"])
+                    self._emit("tool.args", {"name": current_tool["name"], "args": current_tool["args"]})
+                    if current_tool["name"] == "publish_view":
+                        try:
+                            parsed = json.loads(current_tool["args"] or "{}")
+                            payload = parsed.get("payload") if isinstance(parsed, dict) else None
+                            if isinstance(payload, dict) and payload.get("kind") == "dashboard":
+                                published_dashboard = payload
+                        except Exception:  # noqa: BLE001
+                            pass
+                continue
+
+            if etype == "response.output_text.delta":
+                delta = data.get("delta") or ""
+                if delta:
+                    self._emit("text.delta", {"delta": delta})
+                continue
+
+            if etype == "response.completed":
+                resp_obj = data.get("response") or {}
+                sid = resp_obj.get("agent_session_id") or data.get("agent_session_id")
+                if sid:
+                    _log_session(self.mode, _pid, sid)
+                if sid and sid != _session_id:
+                    _session_id = sid
+                    _p["session_id"] = sid
+                    _save_projects(self._projects_data)
+                    self._emit("session.update", {"session_id": sid})
+                out = resp_obj.get("output") or []
+                for it in out:
+                    for c in (it.get("content") or []):
+                        if c.get("type") in ("output_text", "text") and c.get("text"):
+                            completed_text_parts.append(c["text"])
+                continue
+
+            if etype and ("consent" in etype.lower()):
+                consent_payload = data
+                continue
+
+            if etype and (etype.endswith(".failed") or etype.endswith(".error")):
+                logger.error("[sdk] agent turn failed: etype=%s payload=%s", etype, json.dumps(data)[:2000])
+                self._emit("turn.error", {"error": "Something went wrong — please try again."})
+                return
+
+        logger.info("[sdk] stream done: events=%d response_id=%s text_parts=%d consent=%s", event_count, response_id, len(completed_text_parts), consent_payload is not None)
+        final_text = "\n".join(completed_text_parts).strip()
+        self._finalize_turn(
+            prompt=prompt,
+            url=url,
+            previous_response_id=previous_response_id,
+            display_prompt=display_prompt,
+            auto=auto,
+            project_label=project_label,
+            prev_snap=prev_snap,
+            _ctx=_ctx,
+            _p=_p,
+            _pid=_pid,
+            _session_id=_session_id,
+            skill_at_start=_skill_at_start,
+            response_id=response_id,
+            final_text=final_text,
+            consent_payload=consent_payload,
+            published_dashboard=published_dashboard,
+            event_count=event_count,
+        )
+
+    def _finalize_turn(
+        self,
+        *,
+        prompt: str,
+        url: str,
+        previous_response_id: str | None,
+        display_prompt: str,
+        auto: bool,
+        project_label: str,
+        prev_snap: dict[str, str] | None,
+        _ctx: dict | None,
+        _p: dict[str, Any],
+        _pid: str,
+        _session_id: str | None,
+        skill_at_start: str,
+        response_id: str | None,
+        final_text: str,
+        consent_payload: dict | None,
+        published_dashboard: dict | None,
+        event_count: int,
+    ) -> None:
+        """Shared post-stream processing for the SDK transport.
+
+        This is the byte-for-byte counterpart of _post_one_legacy's tail
+        (persist prev_resp, empty-completion retry, consent retry, dashboard
+        learning, turn.complete, view refresh, cache, transcript, snapshot,
+        auto-diff/notify). Retries route back through the _post_one dispatcher.
+        """
+        if response_id:
+            if _p.get("previous_response_id") != response_id:
+                _p["previous_response_id"] = response_id
+                _save_projects(self._projects_data)
+
+        # Empty completion with a stale previous_response_id (the in-memory
+        # transcript rolled on a container restart): retry once from a clean
+        # slate. Drop ONLY previous_response_id — never agent_session_id, which
+        # keys the persistent microVM + $HOME and survives restarts.
+        if (
+            previous_response_id
+            and not consent_payload
+            and not final_text
+            and event_count <= 4
+        ):
+            logger.info("[sdk] empty completion w/ stale prev_resp; retrying without it (keeping session)")
+            if _p.get("previous_response_id") is not None:
+                _p["previous_response_id"] = None
+                _save_projects(self._projects_data)
+            self._post_one(prompt, url=url, previous_response_id=None, display_prompt=display_prompt,
+                           auto=auto, project_label=project_label, prev_snap=prev_snap, _ctx=_ctx)
+            return
+
+        if consent_payload:
+            url2 = _extract_consent_url(consent_payload)
+            if url2:
+                self._emit("consent.required", {"url": url2})
+                try:
+                    webbrowser.open(url2)
+                except Exception:  # noqa: BLE001
+                    pass
+                time.sleep(8)
+                self._post_one(prompt, url=url, previous_response_id=response_id, display_prompt=display_prompt,
+                               auto=auto, project_label=project_label, prev_snap=prev_snap, _ctx=_ctx)
+                return
+
+        dashboard = published_dashboard or _maybe_extract_dashboard(final_text)
+        if dashboard is not None:
+            _act = dashboard.get("activity")
+            _src = "publish_view" if published_dashboard is not None else "text-fence"
+            logger.debug("[sdk] dashboard src=%s keys=%s activity_len=%s", _src, sorted(dashboard.keys()), len(_act) if isinstance(_act, list) else "n/a")
+        if dashboard:
+            mutated = False
+            customer = dashboard.get("customer") or ""
+            if customer and customer != _p.get("customer_name"):
+                _p["customer_name"] = customer
+                if (_p.get("label") or "").lower() in ("", "new project"):
+                    _p["label"] = customer
+                mutated = True
+            skill_name = dashboard.get("skill") or ""
+            if skill_name and skill_name != _p.get("skill"):
+                _p["skill"] = skill_name
+                mutated = True
+            if mutated:
+                _save_projects(self._projects_data)
+                self._emit("projects.update", self._projects_payload())
+        self._last_response_at = time.time()
+        self._emit("turn.complete", {
+            "response_id": response_id,
+            "session_id": _session_id,
+            "project_id": _pid,
+            "text": final_text,
+            "dashboard": dashboard,
+            "auto": auto,
+        })
+        view = _project_view(_pid, mode=self.mode)
+        if _pid == self.project_id and self._sync_skill_from_view(view):
+            self._emit("projects.update", self._projects_payload())
+            _skill_now = _p.get("skill") or "general"
+            if _skill_now != skill_at_start and _skill_now != "general":
+                self._emit("skill.routed", {"skill": _skill_now})
+        if dashboard:
+            live_dash = {k: v for k, v in dashboard.items() if k not in ("from_cache", "saved_at")}
+            view["dashboard"] = live_dash
+            payload_activity = dashboard.get("activity")
+            if isinstance(payload_activity, list) and payload_activity:
+                view["activity"] = payload_activity
+        cache_dashboard = view.get("dashboard")
+        if cache_dashboard:
+            cache_dashboard = {k: v for k, v in cache_dashboard.items() if k not in ("from_cache", "saved_at")}
+        if cache_dashboard or view.get("activity"):
+            try:
+                cache = _load_view_cache()
+                cache[f"{self.mode}/{_pid}"] = {
+                    "dashboard": cache_dashboard,
+                    "activity": view.get("activity") or [],
+                    "saved_at": _now_iso(),
+                }
+                _save_view_cache(cache)
+            except Exception as ex:  # noqa: BLE001
+                logger.debug("view cache write failed: %s", ex)
+        if final_text and display_prompt:
+            try:
+                _save_transcript_turn(self.mode, _pid, display_prompt, final_text)
+            except Exception as ex:  # noqa: BLE001
+                logger.debug("transcript save failed: %s", ex)
+        self._emit("view.update", view)
+
+        current_dash = view.get("dashboard") or {}
+        new_sections = current_dash.get("sections") or []
+        if new_sections:
+            self._section_snapshots[_pid] = {
+                s.get("task_id", ""): s.get("status", "")
+                for s in new_sections
+                if s.get("task_id")
+            }
+
+        if auto:
+            changes = _diff_sections(prev_snap or {}, new_sections)
+            if changes:
+                change_lines = "; ".join(
+                    f"{c['title']}: {c['old_status']} → {c['new_status']}"
+                    for c in changes
+                )
+                _notify(
+                    f"Project Charter — {project_label}",
+                    f"{len(changes)} update{'s' if len(changes) > 1 else ''}: {change_lines}",
+                )
+            self._emit("scheduler.done", {
+                "project_id": _pid,
+                "project_label": project_label,
+                "changes": changes,
+                "next_in_mins": _POLL_INTERVAL_MINS,
+            })
+
+    # ==================================================================
+    # LEGACY raw-httpx Responses transport — retained per request.
+    #
+    # This is the original, proven transport that talks to the /responses
+    # endpoint directly with httpx and a hand-rolled SSE parser. It is kept
+    # verbatim and is NOT dead code: it is the active transport for LOCAL mode
+    # (a localhost charter-agent is not a Foundry project endpoint, so the SDK
+    # can't drive it) and the automatic fallback if the SDK path raises. The
+    # hosted-mode default is now _post_one_sdk above. Do not delete.
+    # ==================================================================
+    def _post_one_legacy(
         self,
         prompt: str,
         *,
@@ -1481,8 +2036,11 @@ class Bridge:
                     event_count += 1
                     data = evt["data"]
                     etype_dbg = (data.get("type") if isinstance(data, dict) else None) or evt.get("event")
-                    if event_count <= 5 or event_count % 25 == 0:
-                        logger.debug("[bridge] evt#%d type=%s", event_count, etype_dbg)
+                    logger.debug("[bridge] evt#%d type=%s", event_count, etype_dbg)
+                    if isinstance(data, dict) and isinstance(etype_dbg, str) and (
+                        "function_call" in etype_dbg or "tool" in etype_dbg or "output_item" in etype_dbg
+                    ):
+                        logger.debug("[bridge] tool-evt type=%s data=%s", etype_dbg, json.dumps(data)[:3000])
                     if not isinstance(data, dict):
                         continue
                     etype = data.get("type") or evt["event"]
@@ -1536,10 +2094,15 @@ class Bridge:
                                 try:
                                     parsed = json.loads(current_tool["args"] or "{}")
                                     payload = parsed.get("payload") if isinstance(parsed, dict) else None
+                                    logger.debug(
+                                        "[bridge] publish_view parsed: top_keys=%s payload_kind=%s",
+                                        sorted(parsed.keys()) if isinstance(parsed, dict) else type(parsed).__name__,
+                                        payload.get("kind") if isinstance(payload, dict) else "n/a",
+                                    )
                                     if isinstance(payload, dict) and payload.get("kind") == "dashboard":
                                         published_dashboard = payload
-                                except Exception:  # noqa: BLE001
-                                    pass
+                                except Exception as _ex:  # noqa: BLE001
+                                    logger.debug("[bridge] publish_view parse failed: %s args=%s", _ex, (current_tool["args"] or "")[:1500])
                         continue
 
                     if etype == "response.output_text.delta":
