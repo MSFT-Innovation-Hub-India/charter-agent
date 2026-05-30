@@ -6,6 +6,10 @@ A sample implementation of a **Microsoft Foundry hosted agent** built on a **ski
 
 ![Solution Architecture](architecture/solutionarchitecture.png)
 
+### Watch the demo
+
+[![Watch the demo](https://img.youtube.com/vi/0gUSkJpvD6Q/maxresdefault.jpg)](https://youtu.be/0gUSkJpvD6Q)
+
 ---
 
 ## Two components, one autonomous system
